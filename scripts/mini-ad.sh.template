@@ -1,0 +1,308 @@
+#!/bin/bash
+set -euo pipefail
+
+LOG=/root/userdata.log
+mkdir -p /root
+touch "$LOG"
+chmod 600 "$LOG"
+exec > >(tee -a "$LOG" | logger -t user-data -s 2>/dev/console) 2>&1
+trap 'echo "ERROR at line $LINENO"; exit 1' ERR
+
+echo "user-data start: $(date -Is)"
+
+# OCI NAT gateway does not route IPv6 — disable it system-wide so glibc never
+# prefers AAAA records and all tools (apt, curl, git) use IPv4 exclusively.
+sysctl -w net.ipv6.conf.all.disable_ipv6=1
+sysctl -w net.ipv6.conf.default.disable_ipv6=1
+
+# Disable automatic updates and kill any already-running apt processes —
+# OCI fires cloud-init fast enough that apt-daily may have grabbed the lock
+# before this script runs; disable alone does not kill an in-flight process.
+systemctl disable --now apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+pkill -9 -f unattended-upgrades 2>/dev/null || true
+pkill -9 -f apt 2>/dev/null || true
+sleep 2
+
+# OCI Ubuntu images block all inbound ports via iptables by default.
+# TODO: restrict source CIDR and open only required AD ports for production.
+iptables -I INPUT -s 0.0.0.0/0 -j ACCEPT
+
+# Set ubuntu password and enable password SSH immediately — before any wait
+# loops so the box is accessible via credentials if key auth fails.
+echo "ubuntu:${ADMINISTRATOR_PASS}" | chpasswd
+if [ -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf ]; then
+  sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' \
+    /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
+fi
+sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/g' /etc/ssh/sshd_config || true
+systemctl restart ssh || systemctl restart sshd || true
+
+# OCI fires cloud-init before DNS resolves — loop on nslookup before proceeding
+# Without this gate, apt-get will fail immediately on a fresh instance
+# DC is ARM64 (A1.Flex) — apt sources use ports.ubuntu.com, not archive.ubuntu.com
+echo "Waiting for DNS resolution..."
+until nslookup ports.ubuntu.com >/dev/null 2>&1; do
+  echo "DNS not ready yet, retrying in 30s..."
+  sleep 30
+done
+echo "DNS ready: $(date -Is)"
+
+# Confirm outbound internet connectivity before package install
+echo "Waiting for outbound internet connectivity..."
+until curl -fsS --max-time 10 http://ports.ubuntu.com/ >/dev/null 2>&1; do
+  echo "Internet not reachable yet, retrying in 30s..."
+  sleep 30
+done
+echo "Network ready: $(date -Is)"
+
+# Terraform-injected inputs
+HOSTNAME_DC="${HOSTNAME_DC}"
+DNS_ZONE="${DNS_ZONE}"
+REALM="${REALM}"
+NETBIOS="${NETBIOS}"
+ADMINISTRATOR_PASS="${ADMINISTRATOR_PASS}"
+ADMIN_USER_PASS="${ADMIN_USER_PASS}"
+
+cat > /root/seed_users.json <<'EOF'
+${USERS_JSON}
+EOF
+chmod 600 /root/seed_users.json
+
+export DEBIAN_FRONTEND=noninteractive
+# OCI NAT gateway does not route IPv6 — force IPv4 for all apt traffic.
+# Timeout + retries prevent indefinite hangs on large Packages index downloads.
+echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+echo 'Acquire::http::Timeout "60";' >> /etc/apt/apt.conf.d/99force-ipv4
+echo 'Acquire::Retries "3";' >> /etc/apt/apt.conf.d/99force-ipv4
+# Preseed iptables-persistent to skip interactive save prompts
+echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
+echo "iptables-persistent iptables-persistent/autosave_v6 boolean false" | debconf-set-selections
+# APT::Update::Error-Mode=any makes apt-get update exit non-zero when any
+# source fails — without it, W: warnings still exit 0 and fool the retry loop.
+for i in {1..20}; do
+  apt-get update -y -o APT::Update::Error-Mode=any && break
+  echo "apt-get update failed (attempt $i/20), killing apt and retrying in 30s..."
+  pkill -9 -f apt 2>/dev/null || true
+  sleep 30
+done
+apt-get install -y \
+  samba krb5-user winbind smbclient dnsutils acl attr chrony unzip \
+  ldb-tools jq git python3-flask python3-venv iptables-persistent
+
+# Preserve hostname + set hostname
+mkdir -p /etc/cloud/cloud.cfg.d
+echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+hostnamectl set-hostname "$HOSTNAME_DC"
+
+# /etc/hosts
+IPV4="$(hostname -I | awk '{print $1}')"
+sed -i "/\b$HOSTNAME_DC\b/d" /etc/hosts || true
+echo "$IPV4 $HOSTNAME_DC.$DNS_ZONE $HOSTNAME_DC" >> /etc/hosts
+
+# Kerberos preseed
+debconf-set-selections <<< "krb5-config krb5-config/default_realm string $REALM"
+debconf-set-selections <<< "krb5-config krb5-config/kerberos_servers string"
+debconf-set-selections <<< "krb5-config krb5-config/admin_server string"
+
+# Chrony NTP — use public pool; OCI does not expose a link-local NTP endpoint
+if ! grep -q "ntp.ubuntu.com" /etc/chrony/chrony.conf; then
+  sed -i 's/^pool .*//g' /etc/chrony/chrony.conf || true
+  cat >> /etc/chrony/chrony.conf <<EOF
+pool ntp.ubuntu.com iburst
+makestep 1.0 3
+rtcsync
+EOF
+fi
+systemctl enable --now chrony
+
+# Stop legacy services (DC uses samba-ad-dc)
+systemctl stop smbd nmbd winbind || true
+systemctl disable smbd nmbd winbind || true
+
+# Provision DC once
+if [ ! -f /var/lib/samba/private/sam.ldb ]; then
+  mv /etc/samba/smb.conf /etc/samba/smb.conf.bak 2>/dev/null || true
+
+  samba-tool domain provision \
+    --use-rfc2307 \
+    --realm="$REALM" \
+    --domain="$NETBIOS" \
+    --server-role=dc \
+    --dns-backend=SAMBA_INTERNAL \
+    --host-name="$HOSTNAME_DC" \
+    --adminpass="$ADMINISTRATOR_PASS"
+
+  # Forward unknown DNS queries to Google public DNS
+  sed -i '/^\s*dns forwarder\s*=/d' /etc/samba/smb.conf
+  sed -i '/^\[global\]/a dns forwarder = 8.8.8.8' /etc/samba/smb.conf
+
+  cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
+  systemctl enable --now samba-ad-dc
+fi
+
+# Disable systemd-resolved + pin resolv.conf
+systemctl stop systemd-resolved || true
+systemctl disable systemd-resolved || true
+[ -L /etc/resolv.conf ] && rm -f /etc/resolv.conf
+
+cat > /etc/resolv.conf <<EOF
+search $DNS_ZONE
+nameserver 127.0.0.1
+nameserver 8.8.8.8
+EOF
+chattr +i /etc/resolv.conf || true
+
+# Allow insecure LDAP simple binds (lab only)
+sed -i '/^\s*ldap server require strong auth/d' /etc/samba/smb.conf
+sed -i '/^\[global\]/a ldap server require strong auth = no' /etc/samba/smb.conf
+systemctl restart samba-ad-dc || true
+
+# Persist iptables rules so the VCN-open rule survives the reboot below
+netfilter-persistent save
+
+sleep 30
+
+# Kerberos sanity (best-effort)
+kinit "Administrator@$REALM" <<< "$ADMINISTRATOR_PASS" || true
+klist || true
+kdestroy || true
+
+# Day-to-day Admin user
+if ! samba-tool user show Admin >/dev/null 2>&1; then
+  samba-tool user create Admin "$ADMIN_USER_PASS"
+  samba-tool group addmembers "Domain Admins" Admin
+  samba-tool user setexpiry Admin --noexpiry
+  samba-tool user setexpiry Administrator --noexpiry
+fi
+
+# Write secrets file
+SECRETS_FILE=/root/ad-secrets.txt
+: > "$SECRETS_FILE"
+chmod 600 "$SECRETS_FILE"
+{
+  echo "Mini-AD provisioned: $(date -Is)"
+  echo "Realm: $REALM"
+  echo "DNS: $DNS_ZONE"
+  echo "NetBIOS: $NETBIOS"
+  echo "Hostname: $HOSTNAME_DC"
+  echo "IP: $IPV4"
+  echo "Administrator: $ADMINISTRATOR_PASS"
+  echo "Admin: $ADMIN_USER_PASS"
+} >> "$SECRETS_FILE"
+
+# Seed users/groups
+SEED_FILE=/root/seed_users.json
+DNS_ZONE="$(jq -r '.domain.dnsZone' "$SEED_FILE")"
+NETBIOS="$(jq -r '.domain.netbios' "$SEED_FILE")"
+USER_BASE_DN="$(jq -r '.domain.userBaseDn // empty' "$SEED_FILE")"
+
+if [ -z "$USER_BASE_DN" ]; then
+  DOMAIN_DN="$(echo "$DNS_ZONE" | awk -F. '{for(i=1;i<=NF;i++)printf "DC=%s%s",$i,(i<NF?",":"")}')"
+  USER_BASE_DN="CN=Users,$DOMAIN_DN"
+fi
+
+jq -c '.groups[]' "$SEED_FILE" | while read -r group; do
+  NAME="$(echo "$group" | jq -r .name)"
+  GID="$(echo "$group" | jq -r .gidNumber)"
+  if ! samba-tool group show "$NAME" >/dev/null 2>&1; then
+    echo "group: $NAME (gid=$GID)"
+    samba-tool group add "$NAME" \
+      --nis-domain="$NETBIOS" \
+      --gid-number="$GID" \
+      --description="Sample Group - $NAME" >> /root/ad_group_attributes.log 2>&1
+  fi
+done
+
+jq -c '.users[]' "$SEED_FILE" | while read -r user; do
+  USERNAME="$(echo "$user" | jq -r .username)"
+  GIVENNAME="$(echo "$user" | jq -r .givenName)"
+  SURNAME="$(echo "$user" | jq -r .surname)"
+  PASSWORD="$(echo "$user" | jq -r .password)"
+  UID_NUMBER="$(echo "$user" | jq -r .uidNumber)"
+  GID_NUMBER="$(echo "$user" | jq -r .gidNumber)"
+  PRIMARY_GROUP="$(echo "$user" | jq -r .primaryGroup)"
+
+  DISPLAYNAME="$GIVENNAME $SURNAME"
+  EMAIL="$USERNAME@$DNS_ZONE"
+
+  if ! samba-tool user show "$USERNAME" >/dev/null 2>&1; then
+    echo "user: $USERNAME"
+    samba-tool user create "$USERNAME" "$PASSWORD" \
+      --given-name="$GIVENNAME" \
+      --surname="$SURNAME" \
+      --mail-address="$EMAIL" \
+      --description="Sample User - $DISPLAYNAME" >> /root/ad_user_attributes.log 2>&1
+
+    samba-tool user setexpiry "$USERNAME" --noexpiry >> /root/ad_user_attributes.log 2>&1
+    samba-tool group addmembers "$PRIMARY_GROUP" "$USERNAME" >> /root/ad_user_attributes.log 2>&1
+
+    ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF
+dn: CN=$DISPLAYNAME,$USER_BASE_DN
+changetype: modify
+add: objectClass
+objectClass: posixAccount
+-
+replace: uid
+uid: $USERNAME
+-
+replace: uidNumber
+uidNumber: $UID_NUMBER
+-
+replace: gidNumber
+gidNumber: $GID_NUMBER
+-
+replace: loginShell
+loginShell: /bin/bash
+-
+replace: unixHomeDirectory
+unixHomeDirectory: /home/$USERNAME
+-
+replace: msSFU30NisDomain
+msSFU30NisDomain: $NETBIOS
+EOF
+  fi
+
+  echo "$user" | jq -r '.extraGroups[]?' | while IFS= read -r grp; do
+    echo "member: $USERNAME -> $grp" >> /root/ad_user_attributes.log 2>&1
+    samba-tool group addmembers "$grp" "$USERNAME" >> /root/ad_user_attributes.log 2>&1
+  done
+done
+
+# OCI CLI needed for instance principal auth to write the sentinel to Object Storage.
+# Installed in venv to avoid Debian urllib3 conflict with system Python packages.
+python3 -m venv /opt/oci-venv
+/opt/oci-venv/bin/pip install --quiet oci-cli
+ln -sf /opt/oci-venv/bin/oci /usr/local/bin/oci
+
+# maxids service — clone OCI module repo and install systemd unit
+cd /
+
+if [ ! -d "/module-oci-mini-ad" ]; then
+  git clone "https://github.com/mamonaco1973/module-oci-mini-ad.git"
+fi
+
+cd "/module-oci-mini-ad/scripts"
+cp "maxids.service" "/etc/systemd/system/maxids.service"
+
+systemctl daemon-reload
+systemctl enable "maxids"
+systemctl start "maxids"
+
+echo "user-data complete: $(date -Is)"
+
+# IAM policy propagation can lag behind Terraform resource creation —
+# retry until the instance principal permission takes effect.
+BUCKET_NAME="${BUCKET_NAME}"
+NAMESPACE="${NAMESPACE}"
+for i in $(seq 1 20); do
+  oci --auth instance_principal os object put \
+    --namespace-name "$NAMESPACE" \
+    --bucket-name "$BUCKET_NAME" \
+    --name "dc-ready" \
+    --file /dev/null \
+    --force && break
+  echo "Sentinel write attempt $i failed (IAM propagation lag), retrying in 30s..."
+  sleep 30
+done
+
+reboot
