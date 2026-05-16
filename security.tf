@@ -1,5 +1,5 @@
 # ==================================================================================================
-# Network Security Group: mini-ad-nsg
+# Network Security Group: windows-ad-nsg
 # OCI NSGs attach per-VNIC (instance-level), matching AWS Security Group semantics.
 # NOTE: Open to all IPv4 (0.0.0.0/0) for simplicity — restrict in production.
 # ==================================================================================================
@@ -7,7 +7,7 @@
 resource "oci_core_network_security_group" "ad_nsg" {
   compartment_id = var.compartment_id
   vcn_id         = var.vcn_id
-  display_name   = "mini-ad-nsg"
+  display_name   = "windows-ad-nsg"
 }
 
 # -----------------------------------
@@ -68,6 +68,23 @@ resource "oci_core_network_security_group_security_rule" "kerberos_udp" {
     destination_port_range {
       min = 88
       max = 88
+    }
+  }
+}
+
+# -----------------------------------
+# RPC Endpoint Mapper (TCP 135)
+# -----------------------------------
+resource "oci_core_network_security_group_security_rule" "rpc_tcp" {
+  network_security_group_id = oci_core_network_security_group.ad_nsg.id
+  direction                 = "INGRESS"
+  protocol                  = "6"
+  source                    = "0.0.0.0/0"
+  source_type               = "CIDR_BLOCK"
+  tcp_options {
+    destination_port_range {
+      min = 135
+      max = 135
     }
   }
 }
@@ -152,40 +169,6 @@ resource "oci_core_network_security_group_security_rule" "kpasswd_udp" {
 }
 
 # -----------------------------------
-# RPC Endpoint Mapper (TCP 135)
-# -----------------------------------
-resource "oci_core_network_security_group_security_rule" "rpc_tcp" {
-  network_security_group_id = oci_core_network_security_group.ad_nsg.id
-  direction                 = "INGRESS"
-  protocol                  = "6"
-  source                    = "0.0.0.0/0"
-  source_type               = "CIDR_BLOCK"
-  tcp_options {
-    destination_port_range {
-      min = 135
-      max = 135
-    }
-  }
-}
-
-# -----------------------------------
-# HTTP (TCP 80) – maxids Flask service
-# -----------------------------------
-resource "oci_core_network_security_group_security_rule" "http_tcp" {
-  network_security_group_id = oci_core_network_security_group.ad_nsg.id
-  direction                 = "INGRESS"
-  protocol                  = "6"
-  source                    = "0.0.0.0/0"
-  source_type               = "CIDR_BLOCK"
-  tcp_options {
-    destination_port_range {
-      min = 80
-      max = 80
-    }
-  }
-}
-
-# -----------------------------------
 # LDAP over SSL (TCP 636)
 # -----------------------------------
 resource "oci_core_network_security_group_security_rule" "ldaps_tcp" {
@@ -220,9 +203,9 @@ resource "oci_core_network_security_group_security_rule" "gc_tcp" {
 }
 
 # -----------------------------------
-# Ephemeral RPC (TCP 49152–65535) – dynamic RPC communications
+# SSH (TCP 22) – management access via bastion port-forward
 # -----------------------------------
-resource "oci_core_network_security_group_security_rule" "rpc_ephemeral_tcp" {
+resource "oci_core_network_security_group_security_rule" "ssh_tcp" {
   network_security_group_id = oci_core_network_security_group.ad_nsg.id
   direction                 = "INGRESS"
   protocol                  = "6"
@@ -230,8 +213,25 @@ resource "oci_core_network_security_group_security_rule" "rpc_ephemeral_tcp" {
   source_type               = "CIDR_BLOCK"
   tcp_options {
     destination_port_range {
-      min = 49152
-      max = 65535
+      min = 22
+      max = 22
+    }
+  }
+}
+
+# -----------------------------------
+# RDP (TCP 3389) – management access via bastion port-forward
+# -----------------------------------
+resource "oci_core_network_security_group_security_rule" "rdp_tcp" {
+  network_security_group_id = oci_core_network_security_group.ad_nsg.id
+  direction                 = "INGRESS"
+  protocol                  = "6"
+  source                    = "0.0.0.0/0"
+  source_type               = "CIDR_BLOCK"
+  tcp_options {
+    destination_port_range {
+      min = 3389
+      max = 3389
     }
   }
 }
@@ -254,9 +254,9 @@ resource "oci_core_network_security_group_security_rule" "ntp_udp" {
 }
 
 # -----------------------------------
-# SSH (TCP 22) – management access
+# Ephemeral RPC (TCP 49152–65535) – dynamic RPC communications
 # -----------------------------------
-resource "oci_core_network_security_group_security_rule" "ssh_tcp" {
+resource "oci_core_network_security_group_security_rule" "rpc_ephemeral_tcp" {
   network_security_group_id = oci_core_network_security_group.ad_nsg.id
   direction                 = "INGRESS"
   protocol                  = "6"
@@ -264,8 +264,8 @@ resource "oci_core_network_security_group_security_rule" "ssh_tcp" {
   source_type               = "CIDR_BLOCK"
   tcp_options {
     destination_port_range {
-      min = 22
-      max = 22
+      min = 49152
+      max = 65535
     }
   }
 }

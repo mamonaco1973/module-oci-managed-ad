@@ -1,6 +1,6 @@
 # ==================================================================================================
 # Object Storage sentinel bucket — DC writes "dc-ready" object on bootstrap completion
-# Terraform polls for this object instead of blindly sleeping for 10 minutes
+# Terraform polls for this object instead of blindly sleeping for 20 minutes
 # ==================================================================================================
 
 data "oci_objectstorage_namespace" "ns" {
@@ -8,10 +8,10 @@ data "oci_objectstorage_namespace" "ns" {
 }
 
 locals {
-  sentinel_bucket_name = "mini-ad-dc-sentinel-${lower(var.netbios)}"
+  sentinel_bucket_name = "windows-ad-dc-sentinel-${lower(var.netbios)}"
 }
 
-resource "oci_objectstorage_bucket" "mini_ad_dc_sentinel" {
+resource "oci_objectstorage_bucket" "windows_ad_dc_sentinel" {
   compartment_id = var.compartment_id
   namespace      = data.oci_objectstorage_namespace.ns.namespace
   name           = local.sentinel_bucket_name
@@ -38,5 +38,5 @@ resource "null_resource" "sentinel_cleanup" {
     EOT
   }
 
-  depends_on = [oci_objectstorage_bucket.mini_ad_dc_sentinel]
+  depends_on = [oci_objectstorage_bucket.windows_ad_dc_sentinel]
 }

@@ -1,0 +1,41 @@
+$ErrorActionPreference = 'Continue'
+$Log = 'C:\ProgramData\sentinel.log'
+Start-Transcript -Path $Log -Append -Force
+
+try {
+    Write-Output "Post-reboot sentinel task started at $(Get-Date -Format o)"
+
+    # ADWS (Active Directory Web Services) coming up signals AD DS is fully initialized
+    $maxWait = 60
+    for ($i = 1; $i -le $maxWait; $i++) {
+        $svc = Get-Service ADWS -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq 'Running') {
+            Write-Output "ADWS running after $($i * 15)s"
+            break
+        }
+        if ($i -eq $maxWait) { throw "ADWS did not start within $($maxWait * 15)s" }
+        Write-Output "Waiting for ADWS ($i/$maxWait)..."
+        Start-Sleep -Seconds 15
+    }
+
+    # Extra buffer — ADWS running does not mean all AD services are fully ready
+    Start-Sleep -Seconds 30
+
+    Write-Output "Writing DC sentinel to Object Storage"
+    $tmpFile = [System.IO.Path]::GetTempFileName()
+    & "C:\oracle\oci-cli\bin\oci.exe" os object put `
+        --namespace-name "${NAMESPACE}" `
+        --bucket-name "${BUCKET_NAME}" `
+        --name "dc-ready" `
+        --file $tmpFile `
+        --auth instance_principal `
+        --force
+    Remove-Item $tmpFile -ErrorAction SilentlyContinue
+
+    Write-Output "Sentinel written — removing scheduled task"
+    Unregister-ScheduledTask -TaskName 'WriteDCSentinel' -Confirm:$false -ErrorAction SilentlyContinue
+
+} finally {
+    Write-Output "Sentinel task finishing at $(Get-Date -Format o)"
+    Stop-Transcript | Out-Null
+}

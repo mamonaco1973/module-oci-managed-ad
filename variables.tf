@@ -1,5 +1,5 @@
 # ==================================================================================================
-# Variables for module-oci-mini-ad
+# Variables for module-oci-managed-ad
 # ==================================================================================================
 
 variable "compartment_id" {
@@ -13,7 +13,7 @@ variable "tenancy_ocid" {
 }
 
 variable "dns_zone" {
-  description = "DNS zone for the Samba AD domain (e.g., mcloud.mikecloud.com)."
+  description = "DNS zone for the Windows AD domain (e.g., mcloud.mikecloud.com)."
   type        = string
 }
 
@@ -27,16 +27,11 @@ variable "netbios" {
   type        = string
 }
 
-variable "user_base_dn" {
-  description = "Base DN for user objects in LDAP (e.g., CN=Users,DC=mcloud,DC=mikecloud,DC=com)."
-  type        = string
-}
-
 variable "instance_shape" {
   description = "OCI compute shape for the AD DC instance."
   type        = string
-  # A1.Flex is always-free eligible (ARM); up to 4 OCPUs / 24 GB across all A1 instances
-  default     = "VM.Standard.A1.Flex"
+  # E4.Flex is x86 — Windows Server does not run on ARM (A1.Flex)
+  default     = "VM.Standard.E4.Flex"
 }
 
 variable "instance_ocpus" {
@@ -48,11 +43,11 @@ variable "instance_ocpus" {
 variable "instance_memory_gb" {
   description = "Memory in GB for the AD DC instance (Flex shapes only)."
   type        = number
-  default     = 2
+  default     = 16
 }
 
 variable "ad_admin_password" {
-  description = "Password for the AD Administrator account used in Samba bootstrap."
+  description = "Password for the AD Administrator account used in DC promotion."
   type        = string
   sensitive   = true
 
@@ -77,19 +72,9 @@ variable "vcn_default_dhcp_options_id" {
   type        = string
 }
 
-variable "ssh_public_key" {
-  description = "SSH public key to authorize on the DC instance."
-  type        = string
-}
-
-variable "users_json" {
-  description = "Pre-rendered JSON string containing user account definitions."
-  type        = string
-  default     = ""
-}
-
 variable "dhcp_update" {
   description = "Update the VCN default DHCP options to point DNS at the DC."
   type        = bool
   default     = true
 }
+

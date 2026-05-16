@@ -1,0 +1,76 @@
+<powershell>
+$ErrorActionPreference = 'Stop'
+$ProgressPreference   = 'SilentlyContinue'
+
+$Log = 'C:\ProgramData\userdata.log'
+Start-Transcript -Path $Log -Append -Force
+
+try {
+    Write-Output "Starting Windows AD DC bootstrap at $(Get-Date -Format o)"
+
+    Write-Output "Disabling IPv6 — OCI subnets are IPv4-only"
+    Get-NetAdapterBinding -ComponentID ms_tcpip6 | Disable-NetAdapterBinding
+
+    Write-Output "Disabling Windows Update — prevents download contention during provisioning"
+    Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
+    Set-Service wuauserv -StartupType Disabled
+
+    Write-Output "Installing AD Domain Services role"
+    Install-WindowsFeature -Name AD-Domain-Services -IncludeManagementTools
+
+    Write-Output "Installing and enabling OpenSSH Server"
+    Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+    Start-Service sshd
+    Set-Service sshd -StartupType Automatic
+    # Use PowerShell as the default SSH shell
+    New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell `
+        -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -PropertyType String -Force | Out-Null
+
+    # Install OCI CLI before the promotion reboot so it is available for the
+    # post-reboot sentinel task that signals bootstrap completion.
+    Write-Output "Installing OCI CLI"
+    $OciInstallScript = "$env:TEMP\install-oci-cli.ps1"
+    Invoke-WebRequest `
+        -Uri "https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.ps1" `
+        -OutFile $OciInstallScript `
+        -UseBasicParsing
+    powershell -NoProfile -ExecutionPolicy Bypass -File $OciInstallScript `
+        --accept-all-defaults `
+        --install-dir "C:\oracle\oci-cli" `
+        --exec-dir  "C:\oracle\oci-cli\bin"
+    Write-Output "OCI CLI install complete"
+
+    # Decode and write the sentinel script, then register it as a startup task.
+    # The sentinel runs after the promotion reboot, waits for ADWS, writes dc-ready.
+    Write-Output "Registering post-reboot sentinel task"
+    $SentinelPath    = 'C:\Windows\Temp\sentinel.ps1'
+    $SentinelBytes   = [System.Convert]::FromBase64String('${SENTINEL_SCRIPT_B64}')
+    $SentinelContent = [System.Text.Encoding]::UTF8.GetString($SentinelBytes)
+    [System.IO.File]::WriteAllText($SentinelPath, $SentinelContent, [System.Text.Encoding]::UTF8)
+
+    $Action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                 -Argument "-NonInteractive -ExecutionPolicy Bypass -File $SentinelPath"
+    $Trigger   = New-ScheduledTaskTrigger -AtStartup
+    $Principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+    Register-ScheduledTask -TaskName 'WriteDCSentinel' `
+        -Action $Action -Trigger $Trigger -Principal $Principal -Force | Out-Null
+    Write-Output "Sentinel task registered"
+
+    Write-Output "Promoting to domain controller for ${DNS_ZONE}"
+    $SafePassword = ConvertTo-SecureString "${ADMINISTRATOR_PASS}" -AsPlainText -Force
+    Install-ADDSForest `
+        -DomainName "${DNS_ZONE}" `
+        -DomainNetBIOSName "${NETBIOS}" `
+        -SafeModeAdministratorPassword $SafePassword `
+        -InstallDns `
+        -Force
+
+    # Install-ADDSForest triggers an automatic OS reboot on completion.
+    # After reboot the WriteDCSentinel task fires and writes the sentinel object.
+
+} finally {
+    Write-Output "Bootstrap script finishing at $(Get-Date -Format o)"
+    Stop-Transcript | Out-Null
+}
+</powershell>

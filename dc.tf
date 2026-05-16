@@ -1,5 +1,5 @@
 # ==================================================================================================
-# Resolve Ubuntu 24.04 image from Oracle's image catalog
+# Resolve Windows Server 2022 image from Oracle's image catalog
 # Filtered by shape + OS version, sorted newest-first for deterministic resolution
 # ==================================================================================================
 
@@ -7,27 +7,27 @@ data "oci_identity_availability_domains" "ads" {
   compartment_id = var.compartment_id
 }
 
-data "oci_core_images" "ubuntu" {
+data "oci_core_images" "windows" {
   compartment_id           = var.compartment_id
-  operating_system         = "Canonical Ubuntu"
-  operating_system_version = "24.04"
+  operating_system         = "Windows"
+  operating_system_version = "Server 2022 Standard"
   shape                    = var.instance_shape
   sort_by                  = "TIMECREATED"
   sort_order               = "DESC"
 }
 
 # ==================================================================================================
-# OCI Compute Instance: Ubuntu 24.04 for Samba-based mini-AD DC
+# OCI Compute Instance: Windows Server 2022 for Windows AD DS Domain Controller
 # - Private subnet only (assign_public_ip = false)
 # - NSG controls required AD/DC ports
-# - user_data must be base64-encoded for OCI cloud-init
+# - user_data must be base64-encoded for OCI cloudbase-init
 # ==================================================================================================
 
-resource "oci_core_instance" "mini_ad_dc_instance" {
+resource "oci_core_instance" "windows_ad_dc_instance" {
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
   compartment_id      = var.compartment_id
   shape               = var.instance_shape
-  display_name        = "mini-ad-dc-${lower(var.netbios)}"
+  display_name        = "windows-ad-dc-${lower(var.netbios)}"
 
   shape_config {
     ocpus         = var.instance_ocpus
@@ -36,7 +36,7 @@ resource "oci_core_instance" "mini_ad_dc_instance" {
 
   source_details {
     source_type = "image"
-    source_id   = data.oci_core_images.ubuntu.images[0].id
+    source_id   = data.oci_core_images.windows.images[0].id
   }
 
   create_vnic_details {
@@ -46,39 +46,38 @@ resource "oci_core_instance" "mini_ad_dc_instance" {
   }
 
   metadata = {
-    ssh_authorized_keys = var.ssh_public_key
-    user_data = base64encode(templatefile("${path.module}/scripts/mini-ad.sh.template", {
-      HOSTNAME_DC        = "ad1"
-      DNS_ZONE           = var.dns_zone
-      REALM              = var.realm
-      NETBIOS            = var.netbios
-      ADMINISTRATOR_PASS = var.ad_admin_password
-      ADMIN_USER_PASS    = var.ad_admin_password
-      USERS_JSON         = local.effective_users_json
-      BUCKET_NAME        = local.sentinel_bucket_name
-      NAMESPACE          = data.oci_objectstorage_namespace.ns.namespace
+    user_data = base64encode(templatefile("${path.module}/scripts/userdata.ps1.template", {
+      DNS_ZONE            = var.dns_zone
+      NETBIOS             = var.netbios
+      ADMINISTRATOR_PASS  = var.ad_admin_password
+      # Sentinel script rendered with bucket/namespace baked in, then b64-encoded so
+      # it can be safely embedded as a single string inside the main PS1 template.
+      SENTINEL_SCRIPT_B64 = base64encode(templatefile("${path.module}/scripts/sentinel.ps1.template", {
+        NAMESPACE   = data.oci_objectstorage_namespace.ns.namespace
+        BUCKET_NAME = local.sentinel_bucket_name
+      }))
     }))
   }
 }
 
 # ==================================================================================================
-# Update VCN default DHCP options to direct instances to this DC for DNS resolution
-# Conditional on dhcp_update; applied only after sentinel confirms DC bootstrap is complete
+# Poll for DC sentinel object — blocks DHCP update until DC signals it is ready
+# DC writes "dc-ready" via a post-reboot scheduled task using instance principal auth
 # ==================================================================================================
 
-resource "null_resource" "wait_for_mini_ad" {
+resource "null_resource" "wait_for_windows_ad" {
   depends_on = [
-    oci_core_instance.mini_ad_dc_instance,
-    oci_objectstorage_bucket.mini_ad_dc_sentinel,
-    oci_identity_policy.mini_ad_dc_sentinel_write,
+    oci_core_instance.windows_ad_dc_instance,
+    oci_objectstorage_bucket.windows_ad_dc_sentinel,
+    oci_identity_policy.windows_ad_dc_sentinel_write,
   ]
 
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     command     = <<-EOT
-      TIMEOUT=900
+      TIMEOUT=1800
       START=$(date +%s)
-      echo "Waiting for mini-AD DC sentinel in bucket ${local.sentinel_bucket_name}..."
+      echo "Waiting for Windows AD DC sentinel in bucket ${local.sentinel_bucket_name}..."
       until oci os object get \
         --namespace-name "${data.oci_objectstorage_namespace.ns.namespace}" \
         --bucket-name "${local.sentinel_bucket_name}" \
@@ -98,7 +97,12 @@ resource "null_resource" "wait_for_mini_ad" {
   }
 }
 
-resource "oci_core_default_dhcp_options" "mini_ad_dns" {
+# ==================================================================================================
+# Update VCN default DHCP options to direct instances to this DC for DNS resolution
+# Conditional on dhcp_update; applied only after sentinel confirms DC bootstrap is complete
+# ==================================================================================================
+
+resource "oci_core_default_dhcp_options" "windows_ad_dns" {
   count = var.dhcp_update ? 1 : 0
 
   # Modifies the VCN's existing default DHCP options in-place
@@ -107,7 +111,7 @@ resource "oci_core_default_dhcp_options" "mini_ad_dns" {
   options {
     type        = "DomainNameServer"
     server_type = "CustomDnsServer"
-    custom_dns_servers = [oci_core_instance.mini_ad_dc_instance.private_ip]
+    custom_dns_servers = [oci_core_instance.windows_ad_dc_instance.private_ip]
   }
 
   options {
@@ -115,23 +119,5 @@ resource "oci_core_default_dhcp_options" "mini_ad_dns" {
     search_domain_names = [var.dns_zone]
   }
 
-  depends_on = [null_resource.wait_for_mini_ad]
-}
-
-# ==================================================================================================
-# Render seed users/groups JSON for DC bootstrap
-# ==================================================================================================
-
-locals {
-  default_users_json = templatefile("${path.module}/scripts/users.json.template", {
-    USER_BASE_DN      = var.user_base_dn
-    DNS_ZONE          = var.dns_zone
-    REALM             = var.realm
-    NETBIOS           = var.netbios
-    sysadmin_password = var.ad_admin_password
-  })
-}
-
-locals {
-  effective_users_json = coalesce(var.users_json, local.default_users_json)
+  depends_on = [null_resource.wait_for_windows_ad]
 }
