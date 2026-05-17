@@ -55,10 +55,19 @@ try {
     # post-reboot sentinel task that signals bootstrap completion.
     Write-Output "Installing OCI CLI"
     $OciInstallScript = "$env:TEMP\install-oci-cli.ps1"
-    Invoke-WebRequest `
-        -Uri "https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.ps1" `
-        -OutFile $OciInstallScript `
-        -UseBasicParsing
+    # NAT gateway DNS may not be ready immediately after boot — retry for up to 5 min
+    $OciUri = "https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.ps1"
+    $maxAttempts = 20
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            Invoke-WebRequest -Uri $OciUri -OutFile $OciInstallScript -UseBasicParsing
+            break
+        } catch {
+            if ($attempt -eq $maxAttempts) { throw }
+            Write-Output "OCI CLI download attempt $attempt failed — retrying in 30s"
+            Start-Sleep -Seconds 30
+        }
+    }
     powershell -NoProfile -ExecutionPolicy Bypass -File $OciInstallScript `
         --accept-all-defaults `
         --install-dir "C:\oracle\oci-cli" `
