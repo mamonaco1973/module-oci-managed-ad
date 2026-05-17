@@ -34,14 +34,21 @@ try {
     Write-Output "Admin domain account created and added to Domain Admins"
 
     Write-Output "Writing DC sentinel to Object Storage"
+    $ociExe = "C:\oracle\oci-cli\bin\oci.exe"
+    if (-not (Test-Path $ociExe)) {
+        throw "OCI CLI not found at $ociExe - was it installed correctly?"
+    }
     $tmpFile = [System.IO.Path]::GetTempFileName()
-    & "C:\oracle\oci-cli\bin\oci.exe" os object put `
+    & $ociExe os object put `
         --namespace-name "${NAMESPACE}" `
         --bucket-name "${BUCKET_NAME}" `
         --name "dc-ready" `
         --file $tmpFile `
         --auth instance_principal `
         --force
+    if ($LASTEXITCODE -ne 0) {
+        throw "OCI CLI sentinel write failed with exit code $LASTEXITCODE"
+    }
     Remove-Item $tmpFile -ErrorAction SilentlyContinue
 
     Write-Output "Sentinel written - removing scheduled task"
