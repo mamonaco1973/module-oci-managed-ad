@@ -86,7 +86,8 @@ try {
     powershell -NoProfile -ExecutionPolicy Bypass -File $OciInstallScript `
         -AcceptAllDefaults `
         -InstallDir "C:\oracle\oci-cli" `
-        -ExecDir "C:\oracle\oci-cli\bin"
+        -ExecDir "C:\oracle\oci-cli\bin" `
+        *> "C:\ProgramData\oci-install.log"
     if ($LASTEXITCODE -ne 0) {
         throw "OCI CLI installer failed with exit code $LASTEXITCODE"
     }
