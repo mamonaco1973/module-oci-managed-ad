@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference   = 'SilentlyContinue'
 
-$Log = 'C:\ProgramData\userdata.log'
+$Log = 'C:\ProgramData\dc1-userdata.log'
 Start-Transcript -Path $Log -Append -Force
 
 try {
@@ -116,7 +116,7 @@ try {
                  -Argument "-NonInteractive -ExecutionPolicy Bypass -File $SentinelPath"
     $Trigger   = New-ScheduledTaskTrigger -AtStartup
     $Principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
-    Register-ScheduledTask -TaskName 'WriteDCSentinel' `
+    Register-ScheduledTask -TaskName 'WriteDC1Sentinel' `
         -Action $Action -Trigger $Trigger -Principal $Principal -Force | Out-Null
     Write-Output "Sentinel task registered"
 
@@ -130,7 +130,7 @@ try {
         -Force
 
     # Install-ADDSForest triggers an automatic OS reboot on completion.
-    # After reboot the WriteDCSentinel task fires and writes the sentinel object.
+    # After reboot the WriteDC1Sentinel task fires and writes the sentinel object.
 
 } finally {
     Write-Output "Bootstrap script finishing at $(Get-Date -Format o)"

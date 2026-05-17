@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Continue'
-$Log = 'C:\ProgramData\sentinel.log'
+$Log = 'C:\ProgramData\dc1-sentinel.log'
 Start-Transcript -Path $Log -Append -Force
 
 try {
@@ -42,7 +42,7 @@ try {
     & $ociExe os object put `
         --namespace-name "${NAMESPACE}" `
         --bucket-name "${BUCKET_NAME}" `
-        --name "dc-ready" `
+        --name "dc1-ready" `
         --file $tmpFile `
         --auth instance_principal `
         --force
@@ -52,7 +52,7 @@ try {
     Remove-Item $tmpFile -ErrorAction SilentlyContinue
 
     Write-Output "Sentinel written - removing scheduled task"
-    Unregister-ScheduledTask -TaskName 'WriteDCSentinel' -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName 'WriteDC1Sentinel' -Confirm:$false -ErrorAction SilentlyContinue
 
 } finally {
     Write-Output "Sentinel task finishing at $(Get-Date -Format o)"
@@ -61,7 +61,7 @@ try {
     # Upload logs to sentinel bucket so they are accessible without RDP
     $ociExe = "C:\oracle\oci-cli\bin\oci.exe"
     if (Test-Path $ociExe) {
-        foreach ($log in @("C:\ProgramData\userdata.log", "C:\ProgramData\sentinel.log", "C:\ProgramData\oci-install.log")) {
+        foreach ($log in @("C:\ProgramData\dc1-userdata.log", "C:\ProgramData\dc1-sentinel.log", "C:\ProgramData\oci-install.log")) {
             if (Test-Path $log) {
                 $objectName = "logs/" + (Split-Path $log -Leaf)
                 & $ociExe os object put `

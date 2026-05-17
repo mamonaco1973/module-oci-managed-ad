@@ -61,5 +61,6 @@ sshd or password-based SSH will be rejected at key exchange.
 ## Logs
 
 All bootstrap logs go to `C:\ProgramData\` — not `C:\Windows\Temp\`.
-- `C:\ProgramData\userdata.log` — cloudbase-init bootstrap
-- `C:\ProgramData\sentinel.log` — post-reboot sentinel task
+- `C:\ProgramData\dc1-userdata.log` — cloudbase-init bootstrap
+- `C:\ProgramData\dc1-sentinel.log` — post-reboot sentinel task
+- `C:\ProgramData\oci-install.log` — OCI CLI installer output

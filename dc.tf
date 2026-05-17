@@ -23,11 +23,11 @@ data "oci_core_images" "windows" {
 # - user_data must be base64-encoded for OCI cloudbase-init
 # ==================================================================================================
 
-resource "oci_core_instance" "windows_ad_dc_instance" {
+resource "oci_core_instance" "ad_dc1_instance" {
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
   compartment_id      = var.compartment_id
   shape               = var.instance_shape
-  display_name        = "windows-ad-dc-${lower(var.netbios)}"
+  display_name        = "ad-dc1-${lower(var.netbios)}"
 
   shape_config {
     ocpus         = var.instance_ocpus
@@ -68,11 +68,11 @@ resource "oci_core_instance" "windows_ad_dc_instance" {
 # DC writes "dc-ready" via a post-reboot scheduled task using instance principal auth
 # ==================================================================================================
 
-resource "null_resource" "wait_for_windows_ad" {
+resource "null_resource" "wait_for_dc1" {
   depends_on = [
-    oci_core_instance.windows_ad_dc_instance,
-    oci_objectstorage_bucket.windows_ad_dc_sentinel,
-    oci_identity_policy.windows_ad_dc_sentinel_write,
+    oci_core_instance.ad_dc1_instance,
+    oci_objectstorage_bucket.ad_dc_sentinel,
+    oci_identity_policy.ad_dc_sentinel_write,
   ]
 
   provisioner "local-exec" {
@@ -84,7 +84,7 @@ resource "null_resource" "wait_for_windows_ad" {
       until oci os object get \
         --namespace-name "${data.oci_objectstorage_namespace.ns.namespace}" \
         --bucket-name "${local.sentinel_bucket_name}" \
-        --name "dc-ready" \
+        --name "dc1-ready" \
         --file /dev/null 2>/dev/null; do
         NOW=$(date +%s)
         ELAPSED=$((NOW - START))
@@ -114,7 +114,7 @@ resource "oci_core_default_dhcp_options" "windows_ad_dns" {
   options {
     type        = "DomainNameServer"
     server_type = "CustomDnsServer"
-    custom_dns_servers = [oci_core_instance.windows_ad_dc_instance.private_ip]
+    custom_dns_servers = [oci_core_instance.ad_dc1_instance.private_ip]
   }
 
   options {
@@ -122,5 +122,5 @@ resource "oci_core_default_dhcp_options" "windows_ad_dns" {
     search_domain_names = [var.dns_zone]
   }
 
-  depends_on = [null_resource.wait_for_windows_ad]
+  depends_on = [null_resource.wait_for_dc1]
 }

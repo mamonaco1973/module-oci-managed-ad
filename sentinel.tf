@@ -8,10 +8,10 @@ data "oci_objectstorage_namespace" "ns" {
 }
 
 locals {
-  sentinel_bucket_name = "windows-ad-dc-sentinel-${lower(var.netbios)}"
+  sentinel_bucket_name = "ad-dc-sentinel-${lower(var.netbios)}"
 }
 
-resource "oci_objectstorage_bucket" "windows_ad_dc_sentinel" {
+resource "oci_objectstorage_bucket" "ad_dc_sentinel" {
   compartment_id = var.compartment_id
   namespace      = data.oci_objectstorage_namespace.ns.namespace
   name           = local.sentinel_bucket_name
@@ -33,10 +33,10 @@ resource "null_resource" "sentinel_cleanup" {
       oci os object delete \
         --namespace-name "${self.triggers.namespace}" \
         --bucket-name "${self.triggers.bucket_name}" \
-        --name "dc-ready" \
+        --name "dc1-ready" \
         --force 2>/dev/null || true
     EOT
   }
 
-  depends_on = [oci_objectstorage_bucket.windows_ad_dc_sentinel]
+  depends_on = [oci_objectstorage_bucket.ad_dc_sentinel]
 }
