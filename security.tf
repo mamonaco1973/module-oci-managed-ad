@@ -11,6 +11,17 @@ resource "oci_core_network_security_group" "ad_nsg" {
 }
 
 # -----------------------------------
+# ICMP – ping and reachability testing
+# -----------------------------------
+resource "oci_core_network_security_group_security_rule" "icmp_ingress" {
+  network_security_group_id = oci_core_network_security_group.ad_nsg.id
+  direction                 = "INGRESS"
+  protocol                  = "1"
+  source                    = "0.0.0.0/0"
+  source_type               = "CIDR_BLOCK"
+}
+
+# -----------------------------------
 # DNS (TCP/UDP 53) – name resolution for clients and AD replication
 # -----------------------------------
 resource "oci_core_network_security_group_security_rule" "dns_tcp" {
