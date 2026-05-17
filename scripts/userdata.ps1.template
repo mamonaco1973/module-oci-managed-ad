@@ -82,8 +82,7 @@ try {
         --exec-dir  "C:\oracle\oci-cli\bin"
     Write-Output "OCI CLI install complete"
 
-    exit 0
-    
+     
     # Decode and write the sentinel script, then register it as a startup task.
     # The sentinel runs after the promotion reboot, waits for ADWS, writes dc-ready.
     Write-Output "Registering post-reboot sentinel task"
