@@ -70,15 +70,17 @@ try {
     $maxAttempts = 20
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         try {
-            foreach ($host in $dnsHosts) {
-                [System.Net.Dns]::GetHostEntry($host) | Out-Null
+            foreach ($dnsHost in $dnsHosts) {
+                Write-Output "Resolving $dnsHost..."
+                [System.Net.Dns]::GetHostEntry($dnsHost) | Out-Null
+                Write-Output "$dnsHost OK"
             }
             Write-Output "DNS ready on attempt $attempt"
             break
         } catch {
-            if ($attempt -eq $maxAttempts) { throw "DNS did not become ready after $maxAttempts attempts" }
-            Write-Output "DNS not ready (attempt $attempt of $maxAttempts) - retrying in 15s"
-            Start-Sleep -Seconds 15
+            if ($attempt -eq $maxAttempts) { throw "DNS did not become ready after $maxAttempts attempts - last error: $_" }
+            Write-Output "DNS not ready (attempt $attempt of $maxAttempts) - failed: $_ - retrying in 15s"
+            Start-Sleep -Seconds 30
         }
     }
 

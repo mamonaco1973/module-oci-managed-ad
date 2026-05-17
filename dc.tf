@@ -78,7 +78,7 @@ resource "null_resource" "wait_for_windows_ad" {
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     command     = <<-EOT
-      TIMEOUT=1800
+      TIMEOUT=3600
       START=$(date +%s)
       echo "Waiting for Windows AD DC sentinel in bucket ${local.sentinel_bucket_name}..."
       until oci os object get \
