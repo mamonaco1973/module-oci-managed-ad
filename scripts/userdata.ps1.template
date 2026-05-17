@@ -28,17 +28,17 @@ try {
         -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -PropertyType String -Force | Out-Null
 
-    # Enable password auth — default sshd_config disables it for Administrators
+    # Replace default sshd_config — default has a Match Group administrators block
+    # that forces pubkey-only auth for all admin accounts, overriding the global
+    # PasswordAuthentication setting. Write a clean config instead of patching.
     $SshdConfig = 'C:\ProgramData\ssh\sshd_config'
-    $cfg = Get-Content $SshdConfig
-    $cfg = $cfg -replace '#PasswordAuthentication yes', 'PasswordAuthentication yes'
-    $cfg = $cfg -replace 'PasswordAuthentication no',  'PasswordAuthentication yes'
-    # Remove the Match Group administrators block that forces pubkey-only auth
-    $cfg = $cfg | Where-Object {
-        $_ -notmatch 'Match Group administrators' -and
-        $_ -notmatch 'AuthorizedKeysFile __PROGRAMDATA__'
-    }
-    $cfg | Set-Content $SshdConfig
+    $cfg = @(
+        'PasswordAuthentication yes',
+        'PubkeyAuthentication yes',
+        'AuthorizedKeysFile .ssh/authorized_keys',
+        'Subsystem sftp sftp-server.exe'
+    )
+    [System.IO.File]::WriteAllLines($SshdConfig, $cfg)
     Restart-Service sshd
 
     Write-Output "Disabling IPv6 — OCI subnets are IPv4-only"
