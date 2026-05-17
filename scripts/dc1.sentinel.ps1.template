@@ -61,7 +61,7 @@ try {
     # Upload logs to sentinel bucket so they are accessible without RDP
     $ociExe = "C:\oracle\oci-cli\bin\oci.exe"
     if (Test-Path $ociExe) {
-        foreach ($log in @("C:\ProgramData\dc1-userdata.log", "C:\ProgramData\dc1-sentinel.log", "C:\ProgramData\oci-install.log")) {
+        foreach ($log in @("C:\ProgramData\dc1-userdata.log", "C:\ProgramData\dc1-sentinel.log", "C:\ProgramData\dc1-oci-install.log")) {
             if (Test-Path $log) {
                 $objectName = "logs/" + (Split-Path $log -Leaf)
                 & $ociExe os object put `
