@@ -8,6 +8,16 @@ Start-Transcript -Path $Log -Append -Force
 try {
     Write-Output "Starting Windows AD DC bootstrap at $(Get-Date -Format o)"
 
+    Write-Output "Setting Administrator password"
+    $AdminPass = ConvertTo-SecureString "${ADMINISTRATOR_PASS}" -AsPlainText -Force
+    Set-LocalUser -Name "Administrator" -Password $AdminPass -PasswordNeverExpires $true
+
+    Write-Output "Creating windows_local_admin local account"
+    $LocalPass = ConvertTo-SecureString "${WINDOWS_LOCAL_ADMIN_PASS}" -AsPlainText -Force
+    New-LocalUser -Name "windows_local_admin" -Password $LocalPass `
+        -FullName "Windows Local Admin" -PasswordNeverExpires
+    Add-LocalGroupMember -Group "Administrators" -Member "windows_local_admin"
+
     Write-Output "Disabling IPv6 — OCI subnets are IPv4-only"
     Get-NetAdapterBinding -ComponentID ms_tcpip6 | Disable-NetAdapterBinding
 

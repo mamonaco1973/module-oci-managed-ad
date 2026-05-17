@@ -47,14 +47,17 @@ resource "oci_core_instance" "windows_ad_dc_instance" {
 
   metadata = {
     user_data = base64encode(templatefile("${path.module}/scripts/userdata.ps1.template", {
-      DNS_ZONE            = var.dns_zone
-      NETBIOS             = var.netbios
-      ADMINISTRATOR_PASS  = var.ad_admin_password
-      # Sentinel script rendered with bucket/namespace baked in, then b64-encoded so
-      # it can be safely embedded as a single string inside the main PS1 template.
+      DNS_ZONE                   = var.dns_zone
+      NETBIOS                    = var.netbios
+      ADMINISTRATOR_PASS         = var.administrator_password
+      WINDOWS_LOCAL_ADMIN_PASS   = var.windows_local_admin_password
+      # Sentinel script rendered with bucket/namespace and Admin password baked in,
+      # then b64-encoded so it embeds safely as a single string in the PS1 template.
       SENTINEL_SCRIPT_B64 = base64encode(templatefile("${path.module}/scripts/sentinel.ps1.template", {
-        NAMESPACE   = data.oci_objectstorage_namespace.ns.namespace
-        BUCKET_NAME = local.sentinel_bucket_name
+        NAMESPACE         = data.oci_objectstorage_namespace.ns.namespace
+        BUCKET_NAME       = local.sentinel_bucket_name
+        ADMIN_DOMAIN_PASS = var.admin_domain_password
+        DNS_ZONE          = var.dns_zone
       }))
     }))
   }

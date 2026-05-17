@@ -46,14 +46,36 @@ variable "instance_memory_gb" {
   default     = 16
 }
 
-variable "ad_admin_password" {
-  description = "Password for the AD Administrator account used in DC promotion."
+variable "administrator_password" {
+  description = "Password for the built-in Windows Administrator account and DSRM."
   type        = string
   sensitive   = true
 
   validation {
-    condition     = !can(regex("^\\-", var.ad_admin_password))
-    error_message = "The AD admin password cannot start with a dash (-)."
+    condition     = !can(regex("^\\-", var.administrator_password))
+    error_message = "The Administrator password cannot start with a dash (-)."
+  }
+}
+
+variable "admin_domain_password" {
+  description = "Password for the 'Admin' domain admin account created post-promotion."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = !can(regex("^\\-", var.admin_domain_password))
+    error_message = "The Admin domain password cannot start with a dash (-)."
+  }
+}
+
+variable "windows_local_admin_password" {
+  description = "Password for the windows_local_admin local account on the DC."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = !can(regex("^\\-", var.windows_local_admin_password))
+    error_message = "The windows_local_admin password cannot start with a dash (-)."
   }
 }
 

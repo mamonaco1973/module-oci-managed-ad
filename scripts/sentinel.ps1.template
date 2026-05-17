@@ -21,6 +21,18 @@ try {
     # Extra buffer — ADWS running does not mean all AD services are fully ready
     Start-Sleep -Seconds 30
 
+    Write-Output "Creating Admin domain account"
+    $AdminDomainPass = ConvertTo-SecureString "${ADMIN_DOMAIN_PASS}" -AsPlainText -Force
+    New-ADUser -Name "Admin" `
+        -SamAccountName "Admin" `
+        -UserPrincipalName "Admin@${DNS_ZONE}" `
+        -AccountPassword $AdminDomainPass `
+        -Enabled $true `
+        -PasswordNeverExpires $true `
+        -Description "DO NOT DELETE"
+    Add-ADGroupMember -Identity "Domain Admins" -Members "Admin"
+    Write-Output "Admin domain account created and added to Domain Admins"
+
     Write-Output "Writing DC sentinel to Object Storage"
     $tmpFile = [System.IO.Path]::GetTempFileName()
     & "C:\oracle\oci-cli\bin\oci.exe" os object put `
