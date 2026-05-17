@@ -43,7 +43,7 @@ variable "instance_ocpus" {
 variable "instance_memory_gb" {
   description = "Memory in GB for the AD DC instance (Flex shapes only)."
   type        = number
-  default     = 16
+  default     = 8
 }
 
 variable "administrator_password" {
