@@ -28,7 +28,7 @@ try {
 
     Write-Output "Installing and enabling OpenSSH Server"
     Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
-    # Capability installs as Disabled on Server 2022 — set Automatic before starting
+    # Capability installs as Disabled on Server 2022 - set Automatic before starting
     Set-Service sshd -StartupType Automatic
     Start-Service sshd
     # Use PowerShell as the default SSH shell
@@ -36,7 +36,7 @@ try {
         -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -PropertyType String -Force | Out-Null
 
-    # Replace default sshd_config — default has a Match Group administrators block
+    # Replace default sshd_config - default has a Match Group administrators block
     # that forces pubkey-only auth for all admin accounts, overriding the global
     # PasswordAuthentication setting. Write a clean config instead of patching.
     $SshdConfig = 'C:\ProgramData\ssh\sshd_config'
@@ -49,10 +49,10 @@ try {
     [System.IO.File]::WriteAllLines($SshdConfig, $cfg)
     Restart-Service sshd
 
-    Write-Output "Disabling IPv6 — OCI subnets are IPv4-only"
+    Write-Output "Disabling IPv6 - OCI subnets are IPv4-only"
     Get-NetAdapterBinding -ComponentID ms_tcpip6 | Disable-NetAdapterBinding
 
-    Write-Output "Disabling Windows Update — prevents download contention during provisioning"
+    Write-Output "Disabling Windows Update - prevents download contention during provisioning"
     Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
     Set-Service wuauserv -StartupType Disabled
 
@@ -63,7 +63,7 @@ try {
     # post-reboot sentinel task that signals bootstrap completion.
     Write-Output "Installing OCI CLI"
     $OciInstallScript = "$env:TEMP\install-oci-cli.ps1"
-    # NAT gateway DNS may not be ready immediately after boot — retry for up to 5 min
+    # NAT gateway DNS may not be ready immediately after boot - retry for up to 5 min
     $OciUri = "https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.ps1"
     $maxAttempts = 20
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
@@ -72,7 +72,7 @@ try {
             break
         } catch {
             if ($attempt -eq $maxAttempts) { throw }
-            Write-Output "OCI CLI download attempt $attempt failed — retrying in 30s"
+            Write-Output "OCI CLI download attempt $attempt failed - retrying in 30s"
             Start-Sleep -Seconds 30
         }
     }

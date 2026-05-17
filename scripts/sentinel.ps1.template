@@ -18,7 +18,7 @@ try {
         Start-Sleep -Seconds 15
     }
 
-    # Extra buffer — ADWS running does not mean all AD services are fully ready
+    # Extra buffer - ADWS running does not mean all AD services are fully ready
     Start-Sleep -Seconds 30
 
     Write-Output "Creating Admin domain account"
@@ -44,7 +44,7 @@ try {
         --force
     Remove-Item $tmpFile -ErrorAction SilentlyContinue
 
-    Write-Output "Sentinel written — removing scheduled task"
+    Write-Output "Sentinel written - removing scheduled task"
     Unregister-ScheduledTask -TaskName 'WriteDCSentinel' -Confirm:$false -ErrorAction SilentlyContinue
 
 } finally {
