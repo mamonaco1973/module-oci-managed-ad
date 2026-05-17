@@ -27,6 +27,19 @@ try {
         -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -PropertyType String -Force | Out-Null
 
+    # Enable password auth — default sshd_config disables it for Administrators
+    $SshdConfig = 'C:\ProgramData\ssh\sshd_config'
+    $cfg = Get-Content $SshdConfig
+    $cfg = $cfg -replace '#PasswordAuthentication yes', 'PasswordAuthentication yes'
+    $cfg = $cfg -replace 'PasswordAuthentication no',  'PasswordAuthentication yes'
+    # Remove the Match Group administrators block that forces pubkey-only auth
+    $cfg = $cfg | Where-Object {
+        $_ -notmatch 'Match Group administrators' -and
+        $_ -notmatch 'AuthorizedKeysFile __PROGRAMDATA__'
+    }
+    $cfg | Set-Content $SshdConfig
+    Restart-Service sshd
+
     # Install OCI CLI before the promotion reboot so it is available for the
     # post-reboot sentinel task that signals bootstrap completion.
     Write-Output "Installing OCI CLI"
