@@ -18,7 +18,8 @@ resource "oci_objectstorage_bucket" "ad_dc_sentinel" {
   access_type    = "NoPublicAccess"
 }
 
-# Delete sentinel object before bucket destruction so the bucket destroy succeeds.
+# Bulk-delete all objects before bucket destruction — sentinel + uploaded logs must
+# all be gone or OCI rejects the bucket delete with BucketNotEmpty.
 # self.triggers used because destroy provisioners cannot reference resource attributes directly.
 resource "null_resource" "sentinel_cleanup" {
   triggers = {
@@ -30,10 +31,9 @@ resource "null_resource" "sentinel_cleanup" {
     when        = destroy
     interpreter = ["bash", "-c"]
     command     = <<-EOT
-      oci os object delete \
+      oci os object bulk-delete \
         --namespace-name "${self.triggers.namespace}" \
         --bucket-name "${self.triggers.bucket_name}" \
-        --name "dc1-ready" \
         --force 2>/dev/null || true
     EOT
   }
