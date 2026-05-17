@@ -73,7 +73,9 @@ try {
     $maxAttempts = 20
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         try {
+            Write-Output "OCI CLI download attempt $attempt of $maxAttempts..."
             Invoke-WebRequest -Uri $OciUri -OutFile $OciInstallScript -UseBasicParsing -TimeoutSec 30
+            Write-Output "OCI CLI download succeeded on attempt $attempt"
             break
         } catch {
             if ($attempt -eq $maxAttempts) { throw }
