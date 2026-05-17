@@ -79,7 +79,7 @@ try {
             break
         } catch {
             if ($attempt -eq $maxAttempts) { throw "DNS did not become ready after $maxAttempts attempts - last error: $_" }
-            Write-Output "DNS not ready (attempt $attempt of $maxAttempts) - failed: $_ - retrying in 15s"
+            Write-Output "DNS not ready (attempt $attempt of $maxAttempts) - failed: $_ - retrying in 30s"
             Start-Sleep -Seconds 30
         }
     }
