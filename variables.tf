@@ -46,6 +46,12 @@ variable "instance_memory_gb" {
   default     = 8
 }
 
+variable "boot_volume_size_gb" {
+  description = "Boot volume size in GB for the AD DC instance."
+  type        = number
+  default     = 64
+}
+
 variable "administrator_password" {
   description = "Password for the built-in Windows Administrator account and DSRM."
   type        = string
