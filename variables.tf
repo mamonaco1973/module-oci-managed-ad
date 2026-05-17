@@ -106,6 +106,18 @@ variable "dhcp_update" {
   default     = true
 }
 
+variable "primary_availability_domain" {
+  description = "Availability domain for DC1. Auto-picks AD[0] if empty."
+  type        = string
+  default     = ""
+}
+
+variable "secondary_availability_domain" {
+  description = "Availability domain for DC2. Auto-picks AD[1] (or AD[0] in single-AD regions) if empty."
+  type        = string
+  default     = ""
+}
+
 variable "dc1_patch_day" {
   description = "Windows Update scheduled install day for DC1 (1=Sun, 2=Mon, 3=Tue, 4=Wed, 5=Thu, 6=Fri, 7=Sat)."
   type        = number

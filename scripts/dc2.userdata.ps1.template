@@ -64,11 +64,16 @@ try {
     Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
         -Name 'LongPathsEnabled' -Value 1
 
-    # Point DNS at DC1 so this instance can resolve the domain before promotion
+    # Point DNS at DC1 so this instance can resolve the domain before promotion.
+    # Also set the connection-specific suffix — without it the adapter inherits the
+    # OCI DHCP suffix (e.g. mikecloud.com) which gets appended to FQDNs and breaks
+    # domain resolution during Install-ADDSDomainController.
     Write-Output "Configuring DNS to point at DC1 (${DC1_IP})"
     $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
     Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex `
         -ServerAddresses @("${DC1_IP}", "8.8.8.8")
+    Set-DnsClient -InterfaceIndex $adapter.InterfaceIndex `
+        -ConnectionSpecificSuffix "${DNS_ZONE}"
 
     # Wait for DC1 LDAP — DC2 cannot promote until it can reach the existing domain
     Write-Output "Waiting for DC1 LDAP on ${DC1_IP}..."

@@ -24,7 +24,7 @@ data "oci_core_images" "windows" {
 # ==================================================================================================
 
 resource "oci_core_instance" "ad_dc1_instance" {
-  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
+  availability_domain = var.primary_availability_domain != "" ? var.primary_availability_domain : data.oci_identity_availability_domains.ads.availability_domains[0].name
   compartment_id      = var.compartment_id
   shape               = var.instance_shape
   display_name        = "ad-dc1-${lower(var.netbios)}"

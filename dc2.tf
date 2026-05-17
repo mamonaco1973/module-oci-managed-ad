@@ -6,7 +6,9 @@
 # ==================================================================================================
 
 resource "oci_core_instance" "ad_dc2_instance" {
-  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[1].name
+  availability_domain = var.secondary_availability_domain != "" ? var.secondary_availability_domain : data.oci_identity_availability_domains.ads.availability_domains[
+    min(1, length(data.oci_identity_availability_domains.ads.availability_domains) - 1)
+  ].name
   compartment_id      = var.compartment_id
   shape               = var.instance_shape
   display_name        = "ad-dc2-${lower(var.netbios)}"
