@@ -18,20 +18,11 @@ try {
         -FullName "Windows Local Admin" -PasswordNeverExpires
     Add-LocalGroupMember -Group "Administrators" -Member "windows_local_admin"
 
-    Write-Output "Disabling IPv6 — OCI subnets are IPv4-only"
-    Get-NetAdapterBinding -ComponentID ms_tcpip6 | Disable-NetAdapterBinding
-
-    Write-Output "Disabling Windows Update — prevents download contention during provisioning"
-    Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
-    Set-Service wuauserv -StartupType Disabled
-
-    Write-Output "Installing AD Domain Services role"
-    Install-WindowsFeature -Name AD-Domain-Services -IncludeManagementTools
-
     Write-Output "Installing and enabling OpenSSH Server"
     Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
-    Start-Service sshd
+    # Capability installs as Disabled on Server 2022 — set Automatic before starting
     Set-Service sshd -StartupType Automatic
+    Start-Service sshd
     # Use PowerShell as the default SSH shell
     New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell `
         -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
@@ -49,6 +40,16 @@ try {
     }
     $cfg | Set-Content $SshdConfig
     Restart-Service sshd
+
+    Write-Output "Disabling IPv6 — OCI subnets are IPv4-only"
+    Get-NetAdapterBinding -ComponentID ms_tcpip6 | Disable-NetAdapterBinding
+
+    Write-Output "Disabling Windows Update — prevents download contention during provisioning"
+    Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
+    Set-Service wuauserv -StartupType Disabled
+
+    Write-Output "Installing AD Domain Services role"
+    Install-WindowsFeature -Name AD-Domain-Services -IncludeManagementTools
 
     # Install OCI CLI before the promotion reboot so it is available for the
     # post-reboot sentinel task that signals bootstrap completion.
