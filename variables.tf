@@ -106,4 +106,16 @@ variable "dhcp_update" {
   default     = true
 }
 
+variable "dc1_patch_day" {
+  description = "Windows Update scheduled install day for DC1 (1=Sun, 2=Mon, 3=Tue, 4=Wed, 5=Thu, 6=Fri, 7=Sat)."
+  type        = number
+  default     = 3
+}
+
+variable "dc2_patch_day" {
+  description = "Windows Update scheduled install day for DC2 (1=Sun, 2=Mon, 3=Tue, 4=Wed, 5=Thu, 6=Fri, 7=Sat)."
+  type        = number
+  default     = 4
+}
+
 

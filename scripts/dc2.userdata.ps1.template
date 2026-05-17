@@ -1,0 +1,161 @@
+<powershell>
+$ErrorActionPreference = 'Stop'
+$ProgressPreference   = 'SilentlyContinue'
+
+$Log = 'C:\ProgramData\dc2-userdata.log'
+Start-Transcript -Path $Log -Append -Force
+
+try {
+    Write-Output "Starting Windows AD DC2 bootstrap at $(Get-Date -Format o)"
+
+    Write-Output "Enabling RDP with Network Level Authentication"
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' `
+        -Name 'fDenyTSConnections' -Value 0
+    # NLA forces credential prompt before the session is established
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+        -Name 'UserAuthentication' -Value 1
+    Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+
+    Write-Output "Setting Administrator password"
+    $AdminPass = ConvertTo-SecureString "${ADMINISTRATOR_PASS}" -AsPlainText -Force
+    Set-LocalUser -Name "Administrator" -Password $AdminPass -PasswordNeverExpires $true
+
+    Write-Output "Creating windows_local_admin local account"
+    $LocalPass = ConvertTo-SecureString "${WINDOWS_LOCAL_ADMIN_PASS}" -AsPlainText -Force
+    New-LocalUser -Name "windows_local_admin" -Password $LocalPass `
+        -FullName "Windows Local Admin" -PasswordNeverExpires
+    Add-LocalGroupMember -Group "Administrators" -Member "windows_local_admin"
+
+    Write-Output "Installing and enabling OpenSSH Server"
+    Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+    # Capability installs as Disabled on Server 2022 - set Automatic before starting
+    Set-Service sshd -StartupType Automatic
+    Start-Service sshd
+    # Use PowerShell as the default SSH shell
+    New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell `
+        -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -PropertyType String -Force | Out-Null
+
+    # Replace default sshd_config - default has a Match Group administrators block
+    # that forces pubkey-only auth for all admin accounts, overriding the global
+    # PasswordAuthentication setting. Write a clean config instead of patching.
+    $SshdConfig = 'C:\ProgramData\ssh\sshd_config'
+    $cfg = @(
+        'PasswordAuthentication yes',
+        'PubkeyAuthentication yes',
+        'AuthorizedKeysFile .ssh/authorized_keys',
+        'Subsystem sftp sftp-server.exe'
+    )
+    [System.IO.File]::WriteAllLines($SshdConfig, $cfg)
+    Restart-Service sshd
+
+    Write-Output "Disabling IPv6 - OCI subnets are IPv4-only"
+    Get-NetAdapterBinding -ComponentID ms_tcpip6 | Disable-NetAdapterBinding
+
+    Write-Output "Disabling Windows Update - prevents download contention during provisioning"
+    Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
+    Set-Service wuauserv -StartupType Disabled
+
+    Write-Output "Installing AD Domain Services role"
+    Install-WindowsFeature -Name AD-Domain-Services -IncludeManagementTools
+
+    # OCI CLI has paths exceeding 260 chars - required before pip install
+    Write-Output "Enabling long path support"
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+        -Name 'LongPathsEnabled' -Value 1
+
+    # Point DNS at DC1 so this instance can resolve the domain before promotion
+    Write-Output "Configuring DNS to point at DC1 (${DC1_IP})"
+    $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+    Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex `
+        -ServerAddresses @("${DC1_IP}", "8.8.8.8")
+
+    # Wait for DC1 LDAP — DC2 cannot promote until it can reach the existing domain
+    Write-Output "Waiting for DC1 LDAP on ${DC1_IP}..."
+    $maxAttempts = 40
+    for ($i = 1; $i -le $maxAttempts; $i++) {
+        $result = Test-NetConnection -ComputerName "${DC1_IP}" -Port 389 `
+            -WarningAction SilentlyContinue
+        if ($result.TcpTestSucceeded) {
+            Write-Output "DC1 LDAP reachable after $i attempts"
+            break
+        }
+        if ($i -eq $maxAttempts) { throw "DC1 LDAP not reachable after $maxAttempts attempts" }
+        Write-Output "DC1 not reachable ($i/$maxAttempts), retrying in 30s..."
+        Start-Sleep -Seconds 30
+    }
+
+    # Wait for DNS before attempting any downloads - installer fetches from multiple hosts
+    Write-Output "Waiting for DNS to be ready..."
+    $dnsHosts = @("raw.githubusercontent.com", "www.python.org", "pypi.org", "files.pythonhosted.org")
+    $maxAttempts = 20
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            foreach ($dnsHost in $dnsHosts) {
+                Write-Output "Resolving $dnsHost..."
+                [System.Net.Dns]::GetHostEntry($dnsHost) | Out-Null
+                Write-Output "$dnsHost OK"
+            }
+            Write-Output "DNS ready on attempt $attempt"
+            break
+        } catch {
+            if ($attempt -eq $maxAttempts) { throw "DNS did not become ready after $maxAttempts attempts - last error: $_" }
+            Write-Output "DNS not ready (attempt $attempt of $maxAttempts) - failed: $_ - retrying in 30s"
+            Start-Sleep -Seconds 30
+        }
+    }
+
+    # Install OCI CLI before the promotion reboot so it is available for the
+    # post-reboot sentinel task that signals bootstrap completion.
+    Write-Output "Installing OCI CLI"
+    $OciInstallScript = "$env:TEMP\install-oci-cli.ps1"
+    $OciUri = "https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.ps1"
+    Invoke-WebRequest -Uri $OciUri -OutFile $OciInstallScript -UseBasicParsing -TimeoutSec 30
+    # Use Continue around subprocess - *> redirect converts stderr to PS error records
+    $ErrorActionPreference = 'Continue'
+    powershell -NoProfile -ExecutionPolicy Bypass -File $OciInstallScript `
+        -AcceptAllDefaults `
+        -InstallDir "C:\oracle\oci-cli" `
+        -ExecDir "C:\oracle\oci-cli\bin" `
+        *> "C:\ProgramData\dc2-oci-install.log"
+    $ErrorActionPreference = 'Stop'
+    if ($LASTEXITCODE -ne 0) {
+        throw "OCI CLI installer failed with exit code $LASTEXITCODE"
+    }
+    Write-Output "OCI CLI install complete"
+
+    # Decode and write the sentinel script, then register it as a startup task.
+    # The sentinel runs after the promotion reboot, waits for ADWS, writes dc2-ready.
+    Write-Output "Registering post-reboot sentinel task"
+    $SentinelPath    = 'C:\Windows\Temp\sentinel.ps1'
+    $SentinelBytes   = [System.Convert]::FromBase64String('${SENTINEL_SCRIPT_B64}')
+    $SentinelContent = [System.Text.Encoding]::UTF8.GetString($SentinelBytes)
+    [System.IO.File]::WriteAllText($SentinelPath, $SentinelContent, [System.Text.Encoding]::UTF8)
+
+    $Action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                 -Argument "-NonInteractive -ExecutionPolicy Bypass -File $SentinelPath"
+    $Trigger   = New-ScheduledTaskTrigger -AtStartup
+    $Principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+    Register-ScheduledTask -TaskName 'WriteDC2Sentinel' `
+        -Action $Action -Trigger $Trigger -Principal $Principal -Force | Out-Null
+    Write-Output "Sentinel task registered"
+
+    Write-Output "Promoting to additional domain controller for ${DNS_ZONE}"
+    $SafePassword = ConvertTo-SecureString "${ADMINISTRATOR_PASS}" -AsPlainText -Force
+    $DomainCred = New-Object System.Management.Automation.PSCredential `
+        ("${NETBIOS}\Admin", (ConvertTo-SecureString "${ADMIN_DOMAIN_PASS}" -AsPlainText -Force))
+    Install-ADDSDomainController `
+        -DomainName "${DNS_ZONE}" `
+        -Credential $DomainCred `
+        -SafeModeAdministratorPassword $SafePassword `
+        -InstallDns `
+        -Force
+
+    # Install-ADDSDomainController triggers an automatic OS reboot on completion.
+    # After reboot the WriteDC2Sentinel task fires and writes the sentinel object.
+
+} finally {
+    Write-Output "Bootstrap script finishing at $(Get-Date -Format o)"
+    Stop-Transcript | Out-Null
+}
+</powershell>

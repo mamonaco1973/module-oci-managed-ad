@@ -59,6 +59,7 @@ resource "oci_core_instance" "ad_dc1_instance" {
         BUCKET_NAME       = local.sentinel_bucket_name
         ADMIN_DOMAIN_PASS = var.admin_domain_password
         DNS_ZONE          = var.dns_zone
+        PATCH_DAY         = var.dc1_patch_day
       }))
     }))
   }
@@ -115,7 +116,10 @@ resource "oci_core_default_dhcp_options" "windows_ad_dns" {
   options {
     type        = "DomainNameServer"
     server_type = "CustomDnsServer"
-    custom_dns_servers = [oci_core_instance.ad_dc1_instance.private_ip]
+    custom_dns_servers = [
+      oci_core_instance.ad_dc1_instance.private_ip,
+      oci_core_instance.ad_dc2_instance.private_ip,
+    ]
   }
 
   options {
@@ -123,5 +127,5 @@ resource "oci_core_default_dhcp_options" "windows_ad_dns" {
     search_domain_names = [var.dns_zone]
   }
 
-  depends_on = [null_resource.wait_for_dc1]
+  depends_on = [null_resource.wait_for_dc1, null_resource.wait_for_dc2]
 }

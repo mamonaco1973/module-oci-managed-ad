@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Continue'
-$Log = 'C:\ProgramData\dc1-sentinel.log'
+$Log = 'C:\ProgramData\dc2-sentinel.log'
 Start-Transcript -Path $Log -Append -Force
 
 try {
-    Write-Output "Post-reboot sentinel task started at $(Get-Date -Format o)"
+    Write-Output "Post-reboot DC2 sentinel task started at $(Get-Date -Format o)"
 
     # ADWS (Active Directory Web Services) coming up signals AD DS is fully initialized
     $maxWait = 60
@@ -21,19 +21,7 @@ try {
     # Extra buffer - ADWS running does not mean all AD services are fully ready
     Start-Sleep -Seconds 30
 
-    Write-Output "Creating Admin domain account"
-    $AdminDomainPass = ConvertTo-SecureString "${ADMIN_DOMAIN_PASS}" -AsPlainText -Force
-    New-ADUser -Name "Admin" `
-        -SamAccountName "Admin" `
-        -UserPrincipalName "Admin@${DNS_ZONE}" `
-        -AccountPassword $AdminDomainPass `
-        -Enabled $true `
-        -PasswordNeverExpires $true `
-        -Description "DO NOT DELETE"
-    Add-ADGroupMember -Identity "Domain Admins" -Members "Admin"
-    Write-Output "Admin domain account created and added to Domain Admins"
-
-    Write-Output "Writing DC sentinel to Object Storage"
+    Write-Output "Writing DC2 sentinel to Object Storage"
     $ociExe = "C:\oracle\oci-cli\bin\oci.exe"
     if (-not (Test-Path $ociExe)) {
         throw "OCI CLI not found at $ociExe - was it installed correctly?"
@@ -42,7 +30,7 @@ try {
     & $ociExe os object put `
         --namespace-name "${NAMESPACE}" `
         --bucket-name "${BUCKET_NAME}" `
-        --name "dc1-ready" `
+        --name "dc2-ready" `
         --file $tmpFile `
         --auth instance_principal `
         --force
@@ -52,7 +40,7 @@ try {
     Remove-Item $tmpFile -ErrorAction SilentlyContinue
 
     Write-Output "Sentinel written - removing scheduled task"
-    Unregister-ScheduledTask -TaskName 'WriteDC1Sentinel' -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName 'WriteDC2Sentinel' -Confirm:$false -ErrorAction SilentlyContinue
 
     # Re-enable Windows Update now that AD is fully up — disabled during provisioning
     # to prevent download contention with OCI CLI install and AD promotion.
@@ -68,13 +56,13 @@ try {
     Write-Output "Windows Update enabled"
 
 } finally {
-    Write-Output "Sentinel task finishing at $(Get-Date -Format o)"
+    Write-Output "DC2 sentinel task finishing at $(Get-Date -Format o)"
     Stop-Transcript | Out-Null
 
     # Upload logs to sentinel bucket so they are accessible without RDP
     $ociExe = "C:\oracle\oci-cli\bin\oci.exe"
     if (Test-Path $ociExe) {
-        foreach ($log in @("C:\ProgramData\dc1-userdata.log", "C:\ProgramData\dc1-sentinel.log", "C:\ProgramData\dc1-oci-install.log")) {
+        foreach ($log in @("C:\ProgramData\dc2-userdata.log", "C:\ProgramData\dc2-sentinel.log", "C:\ProgramData\dc2-oci-install.log")) {
             if (Test-Path $log) {
                 $objectName = "logs/" + (Split-Path $log -Leaf)
                 & $ociExe os object put `
