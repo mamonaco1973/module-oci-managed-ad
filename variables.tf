@@ -100,3 +100,9 @@ variable "dhcp_update" {
   default     = true
 }
 
+variable "assign_public_ip" {
+  description = "Assign a public IP to the DC instance. False for production; true for debugging."
+  type        = bool
+  default     = false
+}
+

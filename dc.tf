@@ -41,7 +41,7 @@ resource "oci_core_instance" "windows_ad_dc_instance" {
 
   create_vnic_details {
     subnet_id        = var.subnet_ocid
-    assign_public_ip = false
+    assign_public_ip = var.assign_public_ip
     nsg_ids          = [oci_core_network_security_group.ad_nsg.id]
   }
 
