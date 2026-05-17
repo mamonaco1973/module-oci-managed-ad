@@ -64,30 +64,38 @@ try {
     Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
         -Name 'LongPathsEnabled' -Value 1
 
+    # Wait for DNS before attempting any downloads - installer fetches from multiple hosts
+    Write-Output "Waiting for DNS to be ready..."
+    $dnsHosts = @("raw.githubusercontent.com", "www.python.org", "pypi.org", "files.pythonhosted.org")
+    $maxAttempts = 20
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            foreach ($host in $dnsHosts) {
+                [System.Net.Dns]::GetHostEntry($host) | Out-Null
+            }
+            Write-Output "DNS ready on attempt $attempt"
+            break
+        } catch {
+            if ($attempt -eq $maxAttempts) { throw "DNS did not become ready after $maxAttempts attempts" }
+            Write-Output "DNS not ready (attempt $attempt of $maxAttempts) - retrying in 15s"
+            Start-Sleep -Seconds 15
+        }
+    }
+
     # Install OCI CLI before the promotion reboot so it is available for the
     # post-reboot sentinel task that signals bootstrap completion.
     Write-Output "Installing OCI CLI"
     $OciInstallScript = "$env:TEMP\install-oci-cli.ps1"
-    # NAT gateway DNS may not be ready immediately after boot - retry for up to 5 min
     $OciUri = "https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.ps1"
-    $maxAttempts = 20
-    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-        try {
-            Write-Output "OCI CLI download attempt $attempt of $maxAttempts..."
-            Invoke-WebRequest -Uri $OciUri -OutFile $OciInstallScript -UseBasicParsing -TimeoutSec 30
-            Write-Output "OCI CLI download succeeded on attempt $attempt"
-            break
-        } catch {
-            if ($attempt -eq $maxAttempts) { throw }
-            Write-Output "OCI CLI download attempt $attempt failed - retrying in 30s"
-            Start-Sleep -Seconds 30
-        }
-    }
+    Invoke-WebRequest -Uri $OciUri -OutFile $OciInstallScript -UseBasicParsing -TimeoutSec 30
+    # Use Continue around subprocess - *> redirect converts stderr to PS error records
+    $ErrorActionPreference = 'Continue'
     powershell -NoProfile -ExecutionPolicy Bypass -File $OciInstallScript `
         -AcceptAllDefaults `
         -InstallDir "C:\oracle\oci-cli" `
         -ExecDir "C:\oracle\oci-cli\bin" `
         *> "C:\ProgramData\oci-install.log"
+    $ErrorActionPreference = 'Stop'
     if ($LASTEXITCODE -ne 0) {
         throw "OCI CLI installer failed with exit code $LASTEXITCODE"
     }

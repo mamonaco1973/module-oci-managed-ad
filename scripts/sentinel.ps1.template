@@ -57,4 +57,21 @@ try {
 } finally {
     Write-Output "Sentinel task finishing at $(Get-Date -Format o)"
     Stop-Transcript | Out-Null
+
+    # Upload logs to sentinel bucket so they are accessible without RDP
+    $ociExe = "C:\oracle\oci-cli\bin\oci.exe"
+    if (Test-Path $ociExe) {
+        foreach ($log in @("C:\ProgramData\userdata.log", "C:\ProgramData\sentinel.log", "C:\ProgramData\oci-install.log")) {
+            if (Test-Path $log) {
+                $objectName = "logs/" + (Split-Path $log -Leaf)
+                & $ociExe os object put `
+                    --namespace-name "${NAMESPACE}" `
+                    --bucket-name "${BUCKET_NAME}" `
+                    --name $objectName `
+                    --file $log `
+                    --auth instance_principal `
+                    --force 2>$null
+            }
+        }
+    }
 }
