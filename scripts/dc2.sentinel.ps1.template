@@ -44,12 +44,14 @@ try {
 
     # Remove 8.8.8.8 — only needed pre-promotion to reach the internet for downloads.
     # After AD is up DC2 must resolve via itself and DC1 only; 8.8.8.8 has no AD records
-    # and causes dcdiag DNS failures.
+    # and causes dcdiag DNS failures. Resolve DC1's IP from AD rather than templating it in.
     Write-Output "Removing 8.8.8.8 from DNS server list"
+    $dc1 = Get-ADDomainController -Filter { Name -like "*DC1*" } | Select-Object -First 1
+    $dc1ip = $dc1.IPv4Address
     $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
     Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex `
-        -ServerAddresses @("${DC1_IP}", "127.0.0.1")
-    Write-Output "DNS servers updated: ${DC1_IP}, 127.0.0.1"
+        -ServerAddresses @($dc1ip, "127.0.0.1")
+    Write-Output "DNS servers updated: $dc1ip, 127.0.0.1"
 
     # Re-enable Windows Update now that AD is fully up — disabled during provisioning
     # to prevent download contention with OCI CLI install and AD promotion.
