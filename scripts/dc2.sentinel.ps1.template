@@ -47,10 +47,9 @@ try {
     Write-Output "Re-enabling Windows Update with patch day ${PATCH_DAY}"
     $wuPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
     if (-not (Test-Path $wuPath)) { New-Item -Path $wuPath -Force | Out-Null }
-    Set-ItemProperty -Path $wuPath -Name 'AUOptions'                     -Value 4
-    Set-ItemProperty -Path $wuPath -Name 'ScheduledInstallDay'           -Value ${PATCH_DAY}
-    Set-ItemProperty -Path $wuPath -Name 'ScheduledInstallTime'          -Value 2
-    Set-ItemProperty -Path $wuPath -Name 'NoAutoRebootWithLoggedOnUsers' -Value 1
+    Set-ItemProperty -Path $wuPath -Name 'AUOptions'            -Value 4
+    Set-ItemProperty -Path $wuPath -Name 'ScheduledInstallDay'  -Value ${PATCH_DAY}
+    Set-ItemProperty -Path $wuPath -Name 'ScheduledInstallTime' -Value 2
     Set-Service wuauserv -StartupType Automatic
     Start-Service wuauserv -ErrorAction SilentlyContinue
     Write-Output "Windows Update enabled"

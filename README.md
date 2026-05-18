@@ -1,139 +1,383 @@
 # module-oci-managed-ad
 
-Terraform module that deploys a **Windows Server 2022 Active Directory Domain Controller** on OCI.
-Built for teams that need real Windows AD — not a managed directory service proxy — with full control
-over domain configuration, group policy, POSIX attributes, and account lifecycle.
+Terraform module that deploys a production-ready two-DC Windows Server 2022 Active Directory
+environment on OCI. Both domain controllers are fully automated from zero — no manual steps,
+no RDP required to bootstrap.
 
-Suitable for production workloads. High availability via a secondary DC in a second availability
-domain is supported via the `highly_available` flag (coming soon).
+> **NOTE:** This module has only been tested running Terraform on a Linux host.
 
----
+## What it deploys
 
-## Features
-
-- Provisions a **Windows Server 2022 compute instance** (VM.Standard.E4.Flex) as a Domain Controller.
-- Fully automates DC promotion via **cloudbase-init userdata** (`Install-ADDSForest`).
-- Installs and configures **OpenSSH Server** on the DC with password authentication enabled.
-- Creates three pre-configured accounts:
-  - `Administrator` — built-in Windows account, password explicitly set, never expires.
-  - `Admin` — domain admin account created post-promotion, added to Domain Admins.
-  - `windows_local_admin` — local account on the DC for fallback access.
-- Uses a **sentinel pattern** to signal bootstrap completion: the DC writes a `dc-ready` object to OCI Object Storage after AD services are fully up, blocking dependent resources until ready.
-- Uses **instance principal auth** (OCI Dynamic Group + IAM policy) for the sentinel write — no credentials stored on the instance.
-- Sets up an **OCI Network Security Group** with all required AD/DC firewall rules including SSH (22) and RDP (3389).
-- Updates the **VCN default DHCP options** to direct DNS at the DC only after the sentinel confirms readiness.
+| Resource | Count | Notes |
+|---|---|---|
+| OCI Compute Instance (Windows Server 2022) | 2 | DC1 and DC2, different availability domains |
+| Network Security Group | 1 | All required AD/DC ports, shared by both DCs |
+| Object Storage bucket | 1 | Sentinel coordination; logs uploaded post-boot |
+| IAM Dynamic Group | 1 | Compartment-scoped; covers both DCs automatically |
+| IAM Policy | 1 | Allows DCs to write sentinel objects via instance principal |
+| OCI Core Default DHCP Options (optional) | 1 | Updated with both DC IPs after both sentinels confirm |
 
 ---
 
-## Module Structure
+## Prerequisites
 
-```
-module-oci-managed-ad/
-├── dc.tf               # DC instance, sentinel poller, DHCP update
-├── sentinel.tf         # OCI Object Storage sentinel bucket
-├── roles.tf            # Dynamic group + IAM policy for instance principal
-├── security.tf         # OCI NSG and all AD/DC port rules
-├── variables.tf        # Input variable definitions
-├── outputs.tf          # Module outputs
-└── scripts/
-    ├── userdata.ps1.template   # DC bootstrap: roles, OpenSSH, OCI CLI, AD promotion
-    └── sentinel.ps1.template  # Post-reboot: waits for ADWS, creates Admin account, writes sentinel
-```
+- OCI CLI configured locally (used by Terraform `local-exec` sentinel pollers)
+- Bash available on the Terraform host (pollers use `bash -c`)
+- The subnet must already exist; pass its OCID as `subnet_ocid`
+- The VCN must already exist; pass its OCID as `vcn_id`
+- If using `dhcp_update = true` (the default), pass the VCN default DHCP options OCID
+  as `vcn_default_dhcp_options_id`
 
 ---
 
-## How It Works
-
-1. **Terraform renders `sentinel.ps1.template`** with the Object Storage namespace, bucket name, `Admin` domain password, and DNS zone baked in, then base64-encodes the result.
-2. **Terraform renders `userdata.ps1.template`** with domain vars, account passwords, and the base64-encoded sentinel script embedded.
-3. **cloudbase-init** runs the userdata on first boot:
-   - Sets the `Administrator` password and creates `windows_local_admin`.
-   - Installs AD DS role and OpenSSH Server (password auth enabled).
-   - Installs OCI CLI.
-   - Decodes and writes `sentinel.ps1` to disk, registers it as a startup scheduled task.
-   - Calls `Install-ADDSForest` → triggers automatic reboot.
-4. **Post-reboot**, the `WriteDCSentinel` scheduled task fires:
-   - Waits for ADWS service (signals AD DS is fully initialized).
-   - Creates the `Admin` domain account and adds it to Domain Admins.
-   - Uploads `dc-ready` to Object Storage via instance principal.
-   - Unregisters itself.
-5. **Terraform** detects the sentinel and proceeds with the DHCP update.
-
----
-
-## Usage Example
+## Usage
 
 ```hcl
 module "windows_ad" {
   source = "github.com/mamonaco1973/module-oci-managed-ad"
 
-  compartment_id = var.compartment_ocid
+  # Identity
+  compartment_id = var.compartment_id
   tenancy_ocid   = var.tenancy_ocid
 
-  # Domain identity
-  netbios  = "MCLOUD"
-  realm    = "MCLOUD.MIKECLOUD.COM"
-  dns_zone = "mcloud.mikecloud.com"
-
-  # Account passwords
-  administrator_password       = random_password.administrator_password.result
-  admin_domain_password        = random_password.admin_domain_password.result
-  windows_local_admin_password = random_password.windows_local_admin_password.result
+  # Domain
+  dns_zone = "corp.example.com"
+  realm    = "CORP.EXAMPLE.COM"
+  netbios  = "CORP"
 
   # Networking
-  vcn_id                      = oci_core_vcn.ad_vcn.id
-  vcn_default_dhcp_options_id = oci_core_vcn.ad_vcn.default_dhcp_options_id
-  subnet_ocid                 = oci_core_subnet.ad_subnet.id
+  subnet_ocid                 = oci_core_subnet.private.id
+  vcn_id                      = oci_core_vcn.main.id
+  vcn_default_dhcp_options_id = oci_core_vcn.main.default_dhcp_options_id
+
+  # Passwords — see Password Requirements below
+  administrator_password       = random_password.administrator.result
+  admin_domain_password        = random_password.admin_domain.result
+  windows_local_admin_password = random_password.local_admin.result
+}
+```
+
+### Outputs
+
+| Name | Description |
+|---|---|
+| `dns_server` | Private IP of DC1 — primary DNS for VCN clients |
+| `dc1_private_ip` | Private IP of DC1 |
+| `dc2_private_ip` | Private IP of DC2 |
+| `dc_public_ip` | Public IP of DC1 (empty string when `assign_public_ip = false`) |
+
+---
+
+## Variables
+
+### Required
+
+| Variable | Type | Description |
+|---|---|---|
+| `compartment_id` | string | OCID of the compartment to deploy into |
+| `tenancy_ocid` | string | Root tenancy OCID — required for dynamic group creation |
+| `dns_zone` | string | AD domain name (e.g. `corp.example.com`) |
+| `realm` | string | Kerberos realm — typically the uppercase domain (e.g. `CORP.EXAMPLE.COM`) |
+| `netbios` | string | NetBIOS short name (e.g. `CORP`) |
+| `subnet_ocid` | string | OCID of the subnet where DCs will be placed |
+| `vcn_id` | string | OCID of the VCN for NSG association |
+| `vcn_default_dhcp_options_id` | string | OCID of the VCN default DHCP options |
+| `administrator_password` | string (sensitive) | Built-in Windows Administrator password; also used as DSRM password |
+| `admin_domain_password` | string (sensitive) | Password for the `Admin` domain admin account created post-promotion |
+| `windows_local_admin_password` | string (sensitive) | Password for the `windows_local_admin` local fallback account |
+
+### Optional
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `instance_shape` | string | `VM.Standard.E4.Flex` | OCI compute shape. Must be x86 — Windows Server does not run on ARM (A1.Flex) |
+| `instance_ocpus` | number | `2` | OCPUs (Flex shapes only) |
+| `instance_memory_gb` | number | `8` | Memory in GB (Flex shapes only) |
+| `boot_volume_size_gb` | number | `64` | Boot volume size in GB |
+| `dhcp_update` | bool | `true` | Update VCN default DHCP options to point DNS at both DCs |
+| `primary_availability_domain` | string | `""` | Availability domain for DC1. Auto-picks `AD[0]` if empty |
+| `secondary_availability_domain` | string | `""` | Availability domain for DC2. Auto-picks `AD[1]` if empty; falls back to `AD[0]` in single-AD regions |
+| `dc1_patch_day` | number | `3` (Tuesday) | Windows Update install day for DC1 (1=Sun … 7=Sat) |
+| `dc2_patch_day` | number | `4` (Wednesday) | Windows Update install day for DC2 |
+
+---
+
+## Password Requirements
+
+All password variables are interpolated directly into PowerShell template strings using
+`${}` syntax inside double-quoted strings. Certain characters break that substitution or
+cause `ConvertTo-SecureString` to fail silently:
+
+- `$` — treated as a PowerShell variable expansion, silently dropping it and the
+  characters that follow until the next whitespace
+- `"` — breaks the surrounding string literal
+- `` ` `` — PowerShell escape character
+- Leading `-` — rejected by `ConvertTo-SecureString`
+
+**Recommended pattern** — generate 23 chars and prepend `"A"` via a local. This
+guarantees the first character is always a known-safe uppercase letter (satisfying one
+Windows complexity class), keeps the final length at 24, and eliminates the leading-dash
+risk without relying on Terraform validation alone:
+
+```hcl
+# Admin account passwords — restrict specials to characters safe in PS1 templates
+resource "random_password" "administrator_password" {
+  length           = 23
+  special          = true
+  override_special = "_-"
+}
+
+resource "random_password" "admin_domain_password" {
+  length           = 23
+  special          = true
+  override_special = "_-"
+}
+
+resource "random_password" "windows_local_admin_password" {
+  length           = 23
+  special          = true
+  override_special = "_-"
+}
+
+locals {
+  administrator_password       = "A${random_password.administrator_password.result}"
+  admin_domain_password        = "A${random_password.admin_domain_password.result}"
+  windows_local_admin_password = "A${random_password.windows_local_admin_password.result}"
+}
+
+module "windows_ad" {
+  # ...
+  administrator_password       = local.administrator_password
+  admin_domain_password        = local.admin_domain_password
+  windows_local_admin_password = local.windows_local_admin_password
+}
+```
+
+For domain user passwords passed to `New-ADUser`, also exclude `$` from `override_special`:
+
+```hcl
+resource "random_password" "jsmith_password" {
+  length           = 23
+  special          = true
+  override_special = "!@#%"   # $ excluded — breaks PS1 double-quoted interpolation
+}
+
+locals {
+  jsmith_password = "A${random_password.jsmith_password.result}"
 }
 ```
 
 ---
 
-## Parameters
+## Bootstrap Sequence
 
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| `compartment_id` | string | — | OCID of the OCI compartment to deploy into. |
-| `tenancy_ocid` | string | — | OCID of the root tenancy — required for dynamic group creation. |
-| `dns_zone` | string | — | DNS zone for the AD domain (e.g., `mcloud.mikecloud.com`). |
-| `realm` | string | — | Kerberos realm (uppercase form of DNS zone). |
-| `netbios` | string | — | NetBIOS short name for the domain. |
-| `administrator_password` | string | — | Password for the built-in Administrator account and DSRM. *(Sensitive)* |
-| `admin_domain_password` | string | — | Password for the `Admin` domain admin account. *(Sensitive)* |
-| `windows_local_admin_password` | string | — | Password for the `windows_local_admin` local account on the DC. *(Sensitive)* |
-| `vcn_id` | string | — | OCID of the VCN for NSG association. |
-| `vcn_default_dhcp_options_id` | string | — | OCID of the VCN default DHCP options to update with the DC IP. |
-| `subnet_ocid` | string | — | OCID of the private subnet for DC placement. |
-| `instance_shape` | string | `VM.Standard.E4.Flex` | OCI compute shape. Must be x86 — Windows Server does not run on ARM. |
-| `instance_ocpus` | number | `2` | OCPUs for the DC instance (Flex shapes only). |
-| `instance_memory_gb` | number | `16` | Memory in GB for the DC instance (Flex shapes only). |
-| `dhcp_update` | bool | `true` | Whether to update VCN default DHCP options to point DNS at the DC. |
+Terraform blocks until both DCs are fully promoted. The total time from `terraform apply`
+to DHCP update is typically 45–60 minutes.
+
+```
+terraform apply
+    │
+    ├─► DC1 instance created
+    │       cloudbase-init runs dc1.userdata.ps1.template
+    │       ├── RDP + NLA enabled
+    │       ├── Accounts set (Administrator, windows_local_admin)
+    │       ├── OpenSSH installed and configured
+    │       ├── AD-Domain-Services role installed
+    │       ├── OCI CLI installed
+    │       ├── Post-reboot sentinel task registered (WriteDC1Sentinel)
+    │       └── Install-ADDSForest → automatic reboot
+    │
+    ├─► wait_for_dc1 polls Object Storage for "dc1-ready" (up to 60 min)
+    │       Post-reboot: WriteDC1Sentinel fires
+    │       ├── Waits for ADWS service
+    │       ├── Creates Admin domain admin account
+    │       ├── Writes "dc1-ready" sentinel object
+    │       ├── Re-enables Windows Update (Tuesday 2AM)
+    │       └── Uploads logs to sentinel bucket
+    │
+    ├─► DC2 instance created (depends on wait_for_dc1)
+    │       cloudbase-init runs dc2.userdata.ps1.template
+    │       ├── RDP + NLA enabled
+    │       ├── Accounts set (Administrator, windows_local_admin)
+    │       ├── OpenSSH installed and configured
+    │       ├── AD-Domain-Services role installed
+    │       ├── OCI CLI installed
+    │       ├── DNS pointed at DC1 IP + connection-specific suffix set
+    │       ├── Waits for DC1 LDAP (port 389) to be reachable
+    │       ├── Post-reboot sentinel task registered (WriteDC2Sentinel)
+    │       └── Install-ADDSDomainController → automatic reboot
+    │
+    ├─► wait_for_dc2 polls Object Storage for "dc2-ready" (up to 60 min)
+    │       Post-reboot: WriteDC2Sentinel fires
+    │       ├── Waits for ADWS service
+    │       ├── Writes "dc2-ready" sentinel object
+    │       ├── Re-enables Windows Update (Wednesday 2AM)
+    │       └── Uploads logs to sentinel bucket
+    │
+    └─► DHCP options updated with DC1 and DC2 IPs (if dhcp_update = true)
+```
 
 ---
 
-## Outputs
+## Sentinel Pattern
 
-| Name | Description |
-|------|-------------|
-| `dns_server` | Private IP of the Windows AD DC — use as DNS server and bastion session target. |
+Each DC writes a zero-byte object to a private Object Storage bucket after AD is fully
+initialized:
+
+| Object | Written by | Signals |
+|---|---|---|
+| `dc1-ready` | DC1 post-reboot scheduled task | DC1 promoted, ADWS running, Admin account created |
+| `dc2-ready` | DC2 post-reboot scheduled task | DC2 promoted, ADWS running |
+
+Terraform polls for each object using `oci os object get` in a `local-exec` provisioner.
+The pollers run on the machine executing `terraform apply` and require the OCI CLI and
+credentials configured locally.
+
+The sentinel bucket is also used for log delivery — each DC uploads its bootstrap logs
+under `logs/` after sentinel write. This means you can retrieve DC logs without RDP or
+bastion access:
+
+```bash
+oci os object get \
+  --namespace-name <namespace> \
+  --bucket-name ad-dc-sentinel-<netbios_lowercase> \
+  --name logs/dc1-userdata.log \
+  --file dc1-userdata.log
+```
 
 ---
 
-## Networking
+## Availability Domain Selection
 
-- The DC is placed in a **private subnet** with no public IP.
-- All AD traffic is controlled via an **OCI Network Security Group**.
-- Management access is via **OCI Bastion Service** port-forwarding to port 22 (SSH) or 3389 (RDP).
-- The DHCP update is gated on the sentinel — clients will not receive the DC as their DNS server until AD is fully up.
+DC1 and DC2 are placed in different availability domains for redundancy. The module
+auto-picks:
+
+- **DC1**: `AD[0]` (first AD in the region)
+- **DC2**: `AD[1]` if available; falls back to `AD[0]` in single-AD regions
+
+To override, specify the full AD name:
+
+```hcl
+primary_availability_domain   = "abc:US-ASHBURN-AD-1"
+secondary_availability_domain = "abc:US-ASHBURN-AD-2"
+```
+
+Leave either variable empty to keep the auto-pick behavior for that DC.
 
 ---
 
-## Roadmap
+## Windows Update Schedule
 
-- **High availability** — secondary DC in a second availability domain (`highly_available = true`), with DHCP pointing at both DCs for DNS failover.
-- **OCI Vault integration** — store account passwords in Vault Secrets instead of Terraform state.
+Windows Update is disabled during bootstrap to prevent download contention with
+the OCI CLI installer and AD promotion. Each DC's sentinel script re-enables it
+with a staggered schedule so both DCs are never patching simultaneously:
 
-## Known Constraints
+| DC | Default patch day | Variable |
+|---|---|---|
+| DC1 | Tuesday (3) at 2AM | `dc1_patch_day` |
+| DC2 | Wednesday (4) at 2AM | `dc2_patch_day` |
 
-- Passwords are currently stored in Terraform state. Treat state as sensitive and restrict access accordingly.
-- A single DC is a single point of failure for authentication. Use `highly_available = true` for production (coming soon).
+
+---
+
+## Network Security Group
+
+The module creates a single NSG attached to both DCs with the following ingress rules
+(source `0.0.0.0/0` — restrict to your subnet CIDR in production):
+
+| Port(s) | Protocol | Purpose |
+|---|---|---|
+| ICMP | — | Ping and reachability |
+| 22 | TCP | SSH (bastion port-forward) |
+| 53 | TCP + UDP | DNS |
+| 88 | TCP + UDP | Kerberos authentication |
+| 123 | UDP | NTP time synchronization |
+| 135 | TCP | RPC endpoint mapper |
+| 389 | TCP + UDP | LDAP |
+| 445 | TCP | SMB (SYSVOL, NETLOGON) |
+| 464 | TCP + UDP | Kerberos change/set password |
+| 636 | TCP | LDAP over SSL |
+| 3268–3269 | TCP | Global Catalog |
+| 3389 | TCP | RDP (bastion port-forward) |
+| 49152–65535 | TCP | Dynamic RPC |
+
+All outbound traffic is permitted.
+
+---
+
+## IAM — Instance Principal Auth
+
+The DCs write sentinel objects using `--auth instance_principal` — no credentials are
+stored on the instances. The module creates:
+
+- A **dynamic group** matching all instances in the compartment
+  (`instance.compartment.id = '<compartment_id>'`). Compartment-scoped matching avoids
+  a circular dependency — a rule referencing instance OCIDs would require the instances
+  to exist before the policy, but the policy must exist before the instances start
+  executing.
+- An **IAM policy** allowing that dynamic group to manage objects in the sentinel bucket
+  only.
+
+---
+
+## Accounts
+
+| Account | Type | Where | Purpose |
+|---|---|---|---|
+| `Administrator` | Local | Both DCs | Built-in Windows admin; also used as DSRM password |
+| `windows_local_admin` | Local | Both DCs | RDP/SSH fallback if domain is unavailable |
+| `Admin` | Domain | AD | Domain admin; created by DC1 sentinel post-promotion; used by clients to join the domain and create users |
+
+The `Admin` account is created in the DC1 sentinel script (post-reboot), not during
+initial bootstrap. It does not exist until DC1 has fully promoted and the `dc1-ready`
+sentinel has been written.
+
+---
+
+## Logs
+
+All bootstrap logs are written to `C:\ProgramData\` on each DC and uploaded to the
+sentinel bucket after promotion:
+
+| Log file | DC | Contents |
+|---|---|---|
+| `dc1-userdata.log` | DC1 | cloudbase-init bootstrap transcript |
+| `dc1-sentinel.log` | DC1 | Post-reboot sentinel task transcript |
+| `dc1-oci-install.log` | DC1 | OCI CLI installer output |
+| `dc2-userdata.log` | DC2 | cloudbase-init bootstrap transcript |
+| `dc2-sentinel.log` | DC2 | Post-reboot sentinel task transcript |
+| `dc2-oci-install.log` | DC2 | OCI CLI installer output |
+
+Retrieve any log from the sentinel bucket without connecting to the instance:
+
+```bash
+oci os object get \
+  --namespace-name <namespace> \
+  --bucket-name ad-dc-sentinel-<netbios_lowercase> \
+  --name logs/<logfile> \
+  --file <localpath>
+```
+
+---
+
+## Known Quirks
+
+**OCI Bastion rejects ECDSA keys.** Use RSA 4096 for any SSH key used with an OCI
+Bastion session.
+
+**Windows Server does not run on ARM.** The default shape is `VM.Standard.E4.Flex`
+(x86). Do not change this to `VM.Standard.A1.Flex` — it will fail at instance creation.
+
+**DC2 DNS suffix.** OCI DHCP assigns a search suffix (e.g. `example.com`) to all
+instances. Without explicitly overriding the connection-specific DNS suffix on DC2,
+FQDNs like `corp.example.com` get resolved as `corp.example.com.example.com`. The
+DC2 userdata sets the connection-specific suffix to `dns_zone` before running
+`Install-ADDSDomainController`.
+
+**Dynamic group propagation lag.** OCI IAM policy changes can take up to 60 seconds
+to propagate. The sentinel write in the post-reboot task will retry if the first
+attempt fails with a permissions error.
+
+**Single-AD regions.** If a region has only one availability domain, DC1 and DC2
+will both land in `AD[0]`. The `secondary_availability_domain` auto-pick logic uses
+`min(1, length(ads) - 1)` to handle this safely.
