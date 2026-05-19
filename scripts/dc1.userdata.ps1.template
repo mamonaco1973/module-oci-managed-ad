@@ -52,6 +52,13 @@ try {
     Write-Output "Disabling IPv6 - OCI subnets are IPv4-only"
     Get-NetAdapterBinding -ComponentID ms_tcpip6 | Disable-NetAdapterBinding
 
+    # OCI DHCP assigns mikecloud.com as the search suffix; override it so FQDNs like
+    # mcloud.mikecloud.com are not mangled into mcloud.mikecloud.com.mikecloud.com
+    Write-Output "Setting connection-specific DNS suffix to ${DNS_ZONE}"
+    $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+    Set-DnsClient -InterfaceIndex $adapter.InterfaceIndex `
+        -ConnectionSpecificSuffix "${DNS_ZONE}"
+
     Write-Output "Disabling Windows Update - prevents download contention during provisioning"
     Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
     Set-Service wuauserv -StartupType Disabled
