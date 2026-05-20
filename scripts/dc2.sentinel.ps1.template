@@ -57,10 +57,13 @@ try {
     # After AD is up DC2 must resolve via itself and DC1 only; 8.8.8.8 has no AD records
     # and causes dcdiag DNS failures. Read the current list and strip 8.8.8.8 — avoids
     # needing AD credentials (sentinel runs as SYSTEM before Kerberos is fully up).
-    Write-Output "Removing 8.8.8.8 from DNS server list"
+    # Remove 8.8.8.8 and 127.0.0.1 — replace loopback with DC2's actual IP so
+    # dcdiag does not flag 127.0.0.1 in DNS settings (Microsoft best practice).
+    Write-Output "Updating DNS server list"
     $adapter = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+    $ownIP = (Get-NetIPAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4).IPAddress
     $current = (Get-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4).ServerAddresses
-    $filtered = $current | Where-Object { $_ -ne "8.8.8.8" }
+    $filtered = @($current | Where-Object { $_ -ne "8.8.8.8" -and $_ -ne "127.0.0.1" }) + $ownIP
     Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses $filtered
     Write-Output "DNS servers updated: $($filtered -join ', ')"
 
