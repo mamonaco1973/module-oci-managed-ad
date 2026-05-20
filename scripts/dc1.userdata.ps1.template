@@ -74,7 +74,7 @@ try {
     # Wait for DNS before attempting any downloads - installer fetches from multiple hosts
     Write-Output "Waiting for DNS to be ready..."
     $dnsHosts = @("raw.githubusercontent.com", "www.python.org", "pypi.org", "files.pythonhosted.org")
-    $maxAttempts = 20
+    $maxAttempts = 120
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         try {
             foreach ($dnsHost in $dnsHosts) {
