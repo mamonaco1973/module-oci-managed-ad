@@ -64,7 +64,6 @@ module "windows_ad" {
 | `dns_server` | Private IP of DC1 — primary DNS for VCN clients |
 | `dc1_private_ip` | Private IP of DC1 |
 | `dc2_private_ip` | Private IP of DC2 |
-| `dc_public_ip` | Public IP of DC1 (empty string when `assign_public_ip = false`) |
 
 ---
 
